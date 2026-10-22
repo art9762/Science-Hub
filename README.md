@@ -6,6 +6,19 @@
 
 Нужен Python 3.11+. В готовом архиве интерфейс уже собран — Node.js для запуска не нужен.
 
+Установка из GitHub требует также Git, Node.js 22+ и npm:
+
+```sh
+git clone https://github.com/art9762/Science-Hub.git
+cd Science-Hub
+python3 setup.py
+.venv/bin/python run.py
+```
+
+На Windows вместо `python3` используйте `python`; после установки запустите `start.bat`.
+
+Для распакованного архива:
+
 ```sh
 python3 setup.py
 .venv/bin/python run.py
@@ -102,6 +115,14 @@ python3 scripts/package_release.py
 ```
 
 Интерактивная документация API: `http://127.0.0.1:8765/docs`. Контракт модулей — [API_CONTRACT.md](API_CONTRACT.md), исходное ТЗ — [docs/IDEA.md](docs/IDEA.md).
+
+## Документация
+
+- [Руководство пользователя](docs/USER_GUIDE.md): настройка API, материалы, работа команды, документы и решения.
+- [Установка и эксплуатация](docs/OPERATIONS.md): запуск, остановка, обновления, резервные копии и устранение ошибок.
+- [Архитектура и расширение](docs/ARCHITECTURE.md): модули, жизненный цикл задачи и добавление провайдеров/инструментов.
+- [Покрытие требований и ограничения](docs/REQUIREMENTS.md).
+- [Результаты проверок](docs/VALIDATION.md).
 
 ## Структура
 
