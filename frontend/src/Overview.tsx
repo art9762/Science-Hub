@@ -8,26 +8,20 @@ import {
   Compass,
   FileText,
   BookOpen,
-  Sparkles,
   Activity,
   Square,
-  Check,
   Clock,
   ArrowRight,
-  Layers,
-  Lightbulb,
-  Target,
-  Globe,
   ExternalLink,
   Save,
-  Filter,
-  MessageSquare,
 } from "lucide-react";
 import { ScreenProps } from "./App";
 import { date, Item, safeUrl } from "./api";
 import { Button, IconButton, Tag, Markdown } from "./ui";
 const statusNames: Record<string, string> = {
   queued: "В очереди",
+  wrapping_up: "Завершает работу",
+  timed_out: "Время истекло",
   running: "В работе",
   completed: "Завершено",
   failed: "Ошибка",
@@ -52,7 +46,7 @@ export function Overview({
   const messagesRef = useRef<HTMLDivElement>(null);
   const scrollEnd = useRef(true);
   const running = state.runs.filter((r) =>
-    ["queued", "running"].includes(r.status),
+    ["queued", "running", "wrapping_up"].includes(r.status),
   );
   const messages =
     history === "all"
@@ -103,7 +97,12 @@ export function Overview({
       navigate("documents");
     } catch {}
   }
-  const recentEvents = state.events.slice(-6).reverse();
+  const selectedRun = history === "all" ? state.runs.at(-1) : state.runs.find((r) => r.id === history);
+  const recentEvents = state.events.filter((e) => e.run_id === selectedRun?.id).slice(-60).reverse();
+  const followupRun = selectedRun?.needs_followup ? selectedRun : null;
+  const elapsed = selectedRun?.started_at
+    ? Math.max(0, Math.floor(((selectedRun.finished_at ? Date.parse(selectedRun.finished_at) : Date.now()) - Date.parse(selectedRun.started_at)) / 1000)) : 0;
+  const duration = (seconds: number) => `${Math.floor(seconds / 60)} мин ${seconds % 60} с`;
   const toggle = (
     list: string[],
     id: string,
@@ -111,79 +110,18 @@ export function Overview({
   ) => set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
   return (
     <>
-      <div className="dashboard-heading">
+      <div className="workbench-heading">
         <div>
-          <span className="eyebrow">
-            ОБЗОР ПРОЕКТА <span className="eyebrow-line" />
-          </span>
-          <h1>
-            {state.project.name}
-            <span className="title-dot">.</span>
-          </h1>
-          <p>
-            {state.project.description ||
-              "Собирайте знания. Задавайте вопросы. Создавайте вместе."}
-          </p>
+          <h1>{state.project.name}</h1>
+          {state.project.description && <p>{state.project.description}</p>}
         </div>
-        <Button variant="secondary" onClick={() => navigate("library")}>
-          <Paperclip size={16} />
-          Добавить материалы
-          <ArrowUpRight size={16} />
-        </Button>
+        <div className="workbench-counts">
+          <button onClick={() => navigate("library")}><BookOpen size={16} /> {state.documents.length} источников</button>
+          <button onClick={() => navigate("documents")}><FileText size={16} /> {state.workspace_documents.length} документов</button>
+          <button onClick={() => navigate("agents")}><Users size={16} /> {state.agents.filter((a) => a.enabled).length} агентов</button>
+        </div>
       </div>
-      <div className="stats-grid">
-        {[
-          {
-            label: "Источников в базе",
-            value: state.documents.length,
-            icon: BookOpen,
-            tone: "peach",
-            screen: "library" as const,
-            small: "Ваш исследовательский контекст",
-          },
-          {
-            label: "Агентов в команде",
-            value: state.agents.filter((a) => a.enabled).length,
-            icon: Users,
-            tone: "mint",
-            screen: "agents" as const,
-            small: `${running.length ? `${running.length} задач в работе` : "Готовы к следующей задаче"}`,
-          },
-          {
-            label: "Рабочих документов",
-            value: state.workspace_documents.length,
-            icon: FileText,
-            tone: "lavender",
-            screen: "documents" as const,
-            small: "От идеи до готового отчёта",
-          },
-          {
-            label: "Решений в проекте",
-            value: state.decisions.length,
-            icon: Layers,
-            tone: "sand",
-            screen: "graph" as const,
-            small: "Аргументы, альтернативы и связи",
-          },
-        ].map((card) => (
-          <button
-            className="stat-card"
-            key={card.label}
-            onClick={() => navigate(card.screen)}
-          >
-            <div className={`stat-icon ${card.tone}`}>
-              <card.icon size={21} strokeWidth={1.6} />
-            </div>
-            <ArrowUpRight className="stat-arrow" size={16} />
-            <div className="stat-number">
-              {card.value.toString().padStart(2, "0")}
-            </div>
-            <strong>{card.label}</strong>
-            <small>{card.small}</small>
-          </button>
-        ))}
-      </div>
-      <div className="dashboard-grid">
+      <div className="workbench-grid">
         <section className="chat-panel panel">
           <div className="panel-heading">
             <div className="panel-title">
@@ -199,7 +137,7 @@ export function Overview({
                       Команда исследует вашу задачу
                     </>
                   ) : (
-                    "Один вопрос — вся команда в деле"
+                    "Задачи, ответы и результаты команды"
                   )}
                 </span>
               </div>
@@ -218,7 +156,7 @@ export function Overview({
                     <option key={r.id} value={r.id}>
                       {String(r.prompt).slice(0, 40)} ·{" "}
                       {r.needs_followup || r.outcome === "budget_limited"
-                        ? "Лимит шагов · требуется продолжение"
+                        ? "Требуется продолжение"
                         : statusNames[r.status]}
                     </option>
                   ))}
@@ -239,49 +177,16 @@ export function Overview({
             }}
           >
             {!messages.length ? (
-              <div className="chat-empty">
-                <div className="sparkle-illustration">
-                  <span />
-                  <Sparkles size={29} strokeWidth={1.3} />
-                  <span />
-                </div>
-                <span className="eyebrow">
-                  БОЛЬШИЕ ИДЕИ НАЧИНАЮТСЯ С ВОПРОСА
-                </span>
-                <h2>Над чем поработаем сегодня?</h2>
-                <p>
-                  Поставьте задачу. Я соберу контекст, подключу специалистов
-                  <br className="desktop-only" /> и помогу разобраться — от
-                  гипотезы до решения.
-                </p>
-                <div className="suggestions">
-                  <button
-                    onClick={() =>
-                      setPrompt(
-                        "Проанализируй материалы проекта. Выдели ключевые факты, противоречия и вопросы, на которые пока нет ответа.",
-                      )
-                    }
-                  >
-                    <BookOpen size={17} />
-                    <span>
-                      Разобрать материалы
-                      <small>Найти главное в источниках</small>
-                    </span>
-                    <ArrowUpRight size={15} />
+              <div className="chat-empty workbench-empty">
+                <Compass size={32} strokeWidth={1.5} />
+                <h2>Задача оркестратору</h2>
+                <p>Опишите, что нужно исследовать или подготовить. Источники и состав команды можно выбрать под полем ввода.</p>
+                <div className="workbench-suggestions">
+                  <button onClick={() => setPrompt("Проанализируй материалы проекта. Выдели ключевые факты, противоречия и вопросы, на которые пока нет ответа.")}>
+                    <BookOpen size={16} /> Разобрать материалы
                   </button>
-                  <button
-                    onClick={() =>
-                      setPrompt(
-                        "Помоги спланировать исследование проекта. Сначала определи, каких исходных данных не хватает, затем предложи этапы работы команды.",
-                      )
-                    }
-                  >
-                    <Lightbulb size={17} />
-                    <span>
-                      Исследовать идею
-                      <small>От гипотезы к плану действий</small>
-                    </span>
-                    <ArrowUpRight size={15} />
+                  <button onClick={() => setPrompt("Составь план исследования проекта: уточни исходные данные, предложи этапы и распредели задачи между специалистами.")}>
+                    <Users size={16} /> Составить план
                   </button>
                 </div>
               </div>
@@ -386,28 +291,15 @@ export function Overview({
             )}
           </div>
           <div className="composer-wrap">
-            {state.runs
-              .filter((r) => r.needs_followup || r.outcome === "budget_limited")
-              .slice(-1)
-              .map((r) => (
-                <div className="limit-banner" key={r.id}>
-                  <Clock size={14} />
-                  <span>
-                    Достигнут лимит шагов. Результат требует продолжения.
-                  </span>
-                  <button
-                    className="text-link"
-                    onClick={() =>
-                      setPrompt(
-                        `Продолжи исследование по предыдущей задаче: ${r.prompt}. Учти уже найденные результаты, незавершённые шаги и ограничения.`,
-                      )
-                    }
-                  >
-                    Продолжить
-                    <ArrowRight size={12} />
-                  </button>
-                </div>
-              ))}
+            {followupRun && (
+              <div className="limit-banner">
+                <Clock size={16} />
+                <span>Задача завершилась с ограничениями. Сохранён промежуточный результат.</span>
+                <button className="text-link" onClick={() => setPrompt(`Продолжи исследование по предыдущей задаче: ${followupRun.prompt}. Учти сохранённые результаты и укажи, что осталось выполнить.`)}>
+                  Продолжить <ArrowRight size={14} />
+                </button>
+              </div>
+            )}
             {running.map((r) => (
               <div className="running-banner" key={r.id}>
                 <Activity size={15} className="pulse" />
@@ -437,7 +329,7 @@ export function Overview({
                       scope === "documents" ? setDocs([]) : setAgents([])
                     }
                   >
-                    Выбрать всё
+                    Сбросить выбор
                   </button>
                 </div>
                 <p>
@@ -554,126 +446,51 @@ export function Overview({
             </div>
           </div>
         </section>
-        <aside className="dashboard-right">
-          <section className="panel team-panel">
+        <aside className="workbench-side">
+          <section className="panel workbench-activity" aria-label="Ход решений">
             <div className="small-panel-heading">
-              <h2>Ваша команда</h2>
-              <button
-                onClick={() => navigate("agents")}
-                aria-label="Открыть офис агентов"
-              >
-                <ArrowUpRight size={17} />
-              </button>
+              <h2><Activity size={18} /> Ход решений</h2>
+              {selectedRun && <Tag tone={selectedRun.status === "failed" ? "red" : "green"}>{statusNames[selectedRun.status] || selectedRun.status}</Tag>}
             </div>
-            <p className="panel-subtitle">
-              Специалисты с разными точками зрения
-            </p>
-            <div className="team-list">
-              {state.agents.slice(0, 5).map((a, i) => {
-                const isActive = running.some((r) =>
-                  state.events
-                    .slice(-4)
-                    .some((e) => e.run_id === r.id && e.agent_id === a.id),
-                );
-                return (
-                  <button key={a.id} onClick={() => navigate("agents")}>
-                    <span
-                      className={`agent-avatar avatar-${i % 5}`}
-                      style={{ borderColor: a.color || undefined }}
-                    >
-                      {a.name.slice(0, 1)}
-                    </span>
-                    <span>
-                      <strong>{a.name}</strong>
-                      <small>{a.model || "Модель оркестратора"}</small>
-                    </span>
-                    <span
-                      className={`agent-state ${isActive ? "working" : ""}`}
-                    >
-                      {isActive ? "Работает" : a.enabled ? "Готов" : "Пауза"}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            {state.agents.length > 5 && (
-              <button className="text-link" onClick={() => navigate("agents")}>
-                Вся команда · {state.agents.length} агентов
-                <ArrowRight size={14} />
-              </button>
-            )}
-            {!state.agents.length && (
-              <p className="muted">
-                Создайте первого специалиста в офисе агентов.
-              </p>
-            )}
+            {selectedRun ? (
+              <>
+                <p className="activity-task">{selectedRun.prompt}</p>
+                <div className="run-metrics">
+                  <span><Clock size={14} /> {duration(elapsed)}</span>
+                  <span>{selectedRun.usage?.calls || 0} API-вызовов</span>
+                </div>
+                {selectedRun.status === "wrapping_up" && <p className="run-deadline">Время исследования истекло. Команда сохраняет результаты перед остановкой.</p>}
+                <div className="workbench-events" role="log" aria-label="События задачи">
+                  {recentEvents.map((e) => (
+                    <div key={e.id} className={`workbench-event ${["error", "tool_error", "timed_out"].includes(e.type) ? "error" : ""}`}>
+                      <span className="event-dot" />
+                      <div>
+                        <p>{e.message}</p>
+                        <time>{date(e.created_at)}</time>
+                      </div>
+                    </div>
+                  ))}
+                  {!recentEvents.length && <p className="muted">Задача ожидает запуска.</p>}
+                </div>
+              </>
+            ) : <p className="workbench-placeholder">После запуска здесь будут видны действия агентов, обращения к источникам, сохранения и ошибки.</p>}
           </section>
-          <section className="project-pulse panel">
+          <section className="panel workbench-library">
             <div className="small-panel-heading">
-              <h2>Фокус проекта</h2>
-              <Target size={17} />
+              <h2><BookOpen size={18} /> База знаний</h2>
+              <IconButton onClick={() => navigate("library")} aria-label="Открыть базу знаний"><ArrowUpRight size={18} /></IconButton>
             </div>
-            <div className="focus-copy">
-              <span className="focus-icon">
-                <Lightbulb size={20} />
-              </span>
-              <strong>
-                {!state.documents.length
-                  ? "Начните с контекста"
-                  : !state.messages.length
-                    ? "Время задать первый вопрос"
-                    : state.claims.some((c) => c.status === "disputed")
-                      ? "Есть спорные утверждения"
-                      : "Следующий шаг — за вами"}
-              </strong>
-              <p>
-                {!state.documents.length
-                  ? "Добавьте исходные материалы. Это поможет команде опираться на факты вашего проекта."
-                  : !state.messages.length
-                    ? "Материалы на месте. Попросите команду выделить главное и найти пробелы в данных."
-                    : state.claims.some((c) => c.status === "disputed")
-                      ? "Посмотрите источники и аргументы в графе, затем поручите команде дополнительную проверку."
-                      : "Продолжайте исследование, уточняйте решения и сохраняйте полезные результаты."}
-              </p>
+            <div className="workbench-files">
+              {state.documents.slice(-4).reverse().map((doc) => (
+                <button key={doc.id} onClick={() => openDocument(doc.id)} title={doc.name}>
+                  <FileText size={25} strokeWidth={1.5} />
+                  <strong>{doc.name}</strong>
+                  <span>{String(doc.name?.split(".").at(-1) || "Источник").toUpperCase()}</span>
+                </button>
+              ))}
             </div>
-            <button
-              className="text-link"
-              onClick={() =>
-                navigate(!state.documents.length ? "library" : "graph")
-              }
-            >
-              {!state.documents.length
-                ? "Добавить источники"
-                : "Открыть граф проекта"}
-              <ArrowRight size={14} />
-            </button>
-          </section>
-          <section className="activity-panel">
-            <div className="small-panel-heading">
-              <h2>Ход работы</h2>
-              <Activity size={16} />
-            </div>
-            {recentEvents.length ? (
-              <div className="event-list">
-                {recentEvents.map((e) => (
-                  <div key={e.id}>
-                    <span
-                      className={`event-dot ${e.type === "error" ? "error" : ""}`}
-                    />
-                    <p>{e.message}</p>
-                    <time>{date(e.created_at)}</time>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="activity-empty">
-                <span className="event-dot" />
-                <p>
-                  Здесь появятся действия команды
-                  <small>История начинается с первой задачи</small>
-                </p>
-              </div>
-            )}
+            {!state.documents.length && <p className="workbench-placeholder">Добавьте файлы, на которые должна опираться команда.</p>}
+            <Button variant="secondary full-width" onClick={() => navigate("library")}><Paperclip size={16} /> Файлы и папки</Button>
           </section>
         </aside>
       </div>

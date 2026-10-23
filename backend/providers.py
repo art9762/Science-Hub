@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -68,7 +69,8 @@ class Settings:
             "default_provider_id": "default",
             "orchestrator_model": os.getenv("SCIENCE_HUB_MODEL", ""),
             "vision_model": os.getenv("SCIENCE_HUB_VISION_MODEL", ""),
-            "max_rounds": 8,
+            "max_runtime_seconds": 600,
+            "shutdown_grace_seconds": 60,
             "max_tokens": 2048,
         }
         if self.path.exists():
@@ -77,6 +79,8 @@ class Settings:
                 self.path.chmod(0o600)
             except (OSError, json.JSONDecodeError):
                 raise ProviderError("Не удалось прочитать локальные настройки API") from None
+        # Old call-count settings no longer restrict autonomous work.
+        defaults.pop("max_rounds", None)
         self.data = defaults
 
     def key(self, provider: dict) -> str:
@@ -100,7 +104,8 @@ class Settings:
                         "default_provider_id",
                         "orchestrator_model",
                         "vision_model",
-                        "max_rounds",
+                        "max_runtime_seconds",
+                        "shutdown_grace_seconds",
                         "max_tokens",
                     )
                 },
@@ -147,7 +152,13 @@ class Settings:
                 candidate[key] = str(patch[key])[:200]
         if candidate["default_provider_id"] not in {p["id"] for p in candidate["providers"]}:
             raise ValueError("Выберите существующего провайдера по умолчанию")
-        for key, low, high in (("max_rounds", 1, 24), ("max_tokens", 128, 8192)):
+        if "max_rounds" in patch:
+            raise ValueError("max_rounds больше не используется; задайте max_runtime_seconds")
+        for key, low, high in (
+            ("max_runtime_seconds", 30, 86400),
+            ("shutdown_grace_seconds", 5, 600),
+            ("max_tokens", 128, 8192),
+        ):
             if key in patch:
                 value = patch[key]
                 if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -250,11 +261,35 @@ class OpenAICompatible:
             content = message.get("content") or ""
             if isinstance(content, list):
                 content = "\n".join(str(i.get("text", "")) for i in content if isinstance(i, dict))
-            if not isinstance(content, str) or not isinstance(message.get("tool_calls", []), list):
+            if not isinstance(content, str):
                 raise ValueError()
+            calls = message.get("tool_calls") or []
+            if not isinstance(calls, list):
+                raise ValueError()
+            normalized = []
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+                    raise ValueError()
+                function = call["function"]
+                name, arguments = function.get("name"), function.get("arguments", "{}")
+                if not isinstance(name, str) or not name:
+                    raise ValueError()
+                # Some compatible providers return a JSON object rather than a JSON string.
+                # Keep invalid JSON strings intact so the model can repair a rejected tool call.
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                if not isinstance(arguments, str):
+                    raise ValueError()
+                normalized.append(
+                    {
+                        "id": str(call.get("id") or "call_" + uuid4().hex),
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments},
+                    }
+                )
             return {
                 "content": content,
-                "tool_calls": message.get("tool_calls") or [],
+                "tool_calls": normalized,
                 "usage": data.get("usage") or {},
                 "finish_reason": data["choices"][0].get("finish_reason"),
             }

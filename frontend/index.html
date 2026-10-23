@@ -8,6 +8,13 @@
       name="description"
       content="Science Hub — локальное рабочее пространство для исследований и инженерных проектов"
     />
+    <script>
+      try {
+        const theme = localStorage.getItem("science-hub-theme");
+        document.documentElement.dataset.theme = theme === "light" || theme === "dark"
+          ? theme : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      } catch {}
+    </script>
     <title>Science Hub · Исследовательская среда</title>
   </head>
   <body>

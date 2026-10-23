@@ -1125,19 +1125,34 @@ export function SettingsScreen({
             </datalist>
             <div className="form-row">
               <Field
-                label="Максимум раундов"
-                hint="Ограничивает длительность автономного исследования."
+                label="Автономная работа, минут"
+                hint="По истечении времени команда получает указание завершить работу и сохранить результат."
               >
                 <input
                   type="number"
-                  min={1}
-                  max={24}
-                  value={form.max_rounds || 1}
-                  onChange={(e) =>
-                    change({ max_rounds: Number(e.target.value) })
-                  }
+                  required
+                  min={0.5}
+                  max={1440}
+                  step={0.5}
+                  value={(form.max_runtime_seconds ?? 600) / 60}
+                  onChange={(e) => change({ max_runtime_seconds: Number(e.target.value) * 60 })}
                 />
               </Field>
+              <Field
+                label="Время на завершение, секунд"
+                hint="После этого периода оставшиеся запросы и агенты принудительно останавливаются."
+              >
+                <input
+                  type="number"
+                  required
+                  min={5}
+                  max={600}
+                  value={form.shutdown_grace_seconds ?? 60}
+                  onChange={(e) => change({ shutdown_grace_seconds: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
+            <div className="form-row">
               <Field label="Токенов на ответ">
                 <input
                   type="number"

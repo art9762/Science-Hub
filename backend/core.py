@@ -44,6 +44,12 @@ class DocumentPatch(Payload):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     category: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=100000)
+    folder_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class FolderInput(Payload):
+    name: str = Field(min_length=1, max_length=200)
+    parent_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class AnnotationInput(Payload):
@@ -191,6 +197,7 @@ def store_for(request: Request) -> Store:
 
 def document_public(document: dict, summary=False) -> dict:
     result = {key: value for key, value in document.items() if key != "file_path"}
+    result.setdefault("folder_id", None)
     result["page_count"] = len(document.get("pages", []))
     if summary:
         result.pop("pages", None)
@@ -275,6 +282,7 @@ def state(pid: str, request: Request):
     result = {"project": store.project(pid)}
     for plural, kind in (
         ("documents", "document"),
+        ("folders", "folder"),
         ("agents", "agent"),
         ("messages", "message"),
         ("runs", "run"),
@@ -293,10 +301,16 @@ def state(pid: str, request: Request):
 
 @router.post("/projects/{pid}/documents", status_code=201)
 async def upload_documents(
-    pid: str, request: Request, files: list[UploadFile] = File(...), category: str = Form("Общее")
+    pid: str,
+    request: Request,
+    files: list[UploadFile] = File(...),
+    category: str = Form("Общее"),
+    folder_id: str | None = Form(default=None, min_length=1, max_length=200),
 ):
     store = store_for(request)
     store.project(pid)
+    if folder_id is not None:
+        store.get(pid, "folder", folder_id)
     if len(files) > 20 or not files:
         raise HTTPException(422, "Загрузите от 1 до 20 файлов за один раз.")
     if len(category) > 100:
@@ -328,6 +342,7 @@ async def upload_documents(
                 {
                     "name": name,
                     "category": category.strip() or "Общее",
+                    "folder_id": folder_id,
                     "size": size,
                     "file_path": str(current.relative_to(store.root)),
                     **extracted,
@@ -364,6 +379,8 @@ def document(pid: str, item_id: str, request: Request):
 def patch_document(pid: str, item_id: str, body: DocumentPatch, request: Request):
     store = store_for(request)
     data = _changes(body)
+    if "folder_id" in body.model_fields_set:
+        data["folder_id"] = body.folder_id
     _named(data)
     if "name" in data:
         data["name"] = safe_filename(data["name"])
@@ -470,7 +487,7 @@ def delete_annotation(pid: str, item_id: str, request: Request):
 
 
 def _validate_entity(store, pid, kind, data, item_id=None):
-    if kind == "agent":
+    if kind in {"agent", "folder"}:
         _named(data)
     if kind in {"workspace_document", "decision"}:
         _named(data, "title")
@@ -515,7 +532,10 @@ def _register_entity(path, kind, model, *, detail=False, patch=True):
         store = store_for(request)
         store.project(pid)
         _validate_entity(store, pid, kind, data)
-        return store.put(pid, kind, data)
+        try:
+            return store.put(pid, kind, data)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     def get_item(pid: str, item_id: str, request: Request):
         return store_for(request).get(pid, kind, item_id)
@@ -531,7 +551,10 @@ def _register_entity(path, kind, model, *, detail=False, patch=True):
         except ValidationError as exc:
             raise HTTPException(422, exc.errors(include_context=False)) from exc
         _validate_entity(store, pid, kind, data, item_id)
-        return store.put(pid, kind, {**original, **data})
+        try:
+            return store.put(pid, kind, {**original, **data})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     def delete_item(pid: str, item_id: str, request: Request):
         store_for(request).delete(pid, kind, item_id)
@@ -549,6 +572,7 @@ def _register_entity(path, kind, model, *, detail=False, patch=True):
 
 
 for path, kind, model in (
+    ("folders", "folder", FolderInput),
     ("agents", "agent", AgentInput),
     ("workspace-documents", "workspace_document", WorkspaceInput),
     ("decisions", "decision", DecisionInput),

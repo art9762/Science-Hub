@@ -17,7 +17,9 @@ def workspace(tmp_path, monkeypatch):
     store = Store(tmp_path)
     project = store.create_project("Test research")
     settings = Settings(tmp_path)
-    settings.update({"orchestrator_model": "mock-model", "max_rounds": 5})
+    settings.update(
+        {"orchestrator_model": "mock-model", "max_runtime_seconds": 600, "shutdown_grace_seconds": 60}
+    )
     return store, project["id"], settings
 
 
@@ -25,7 +27,14 @@ def new_run(store, pid, **extra):
     return store.put(
         pid,
         "run",
-        {"prompt": "Проверь исходные данные", "mode": "team", "status": "queued", "max_rounds": 5, **extra},
+        {
+            "prompt": "Проверь исходные данные",
+            "mode": "team",
+            "status": "queued",
+            "max_runtime_seconds": 600,
+            "shutdown_grace_seconds": 60,
+            **extra,
+        },
     )
 
 
@@ -86,6 +95,7 @@ async def test_run_uses_real_tool_results_and_persists(workspace, monkeypatch):
     await Runner(store, pid, run, settings).execute()
     saved = store.get(pid, "run", run["id"])
     assert saved["status"] == "completed"
+    assert saved["finished_at"] >= saved["started_at"]
     assert saved["usage"]["calls"] == 3
     assert saved["missing_information"][0]["question"] == "Какие единицы?"
     assert store.list(pid, "workspace_document")[0]["title"] == "Расчёт"
@@ -96,7 +106,7 @@ async def test_run_uses_real_tool_results_and_persists(workspace, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delegate_is_model_selected_and_bounded(workspace, monkeypatch):
+async def test_delegate_is_model_selected(workspace, monkeypatch):
     store, pid, settings = workspace
     agent = store.put(
         pid,
@@ -125,7 +135,7 @@ async def test_delegate_is_model_selected_and_bounded(workspace, monkeypatch):
     assert [m["agent_id"] for m in agent_messages] == [agent["id"]]
     assert adapter.requests[1]["model"] == "specialist"
     assert {t["function"]["name"] for t in adapter.requests[1]["tools"]} == {"calculate"}
-    assert store.get(pid, "run", run["id"])["usage"]["calls"] <= 5
+    assert store.get(pid, "run", run["id"])["usage"]["calls"] == 3
 
 
 @pytest.mark.asyncio
@@ -145,6 +155,7 @@ async def test_cancel_stops_provider_and_persists(workspace, monkeypatch):
     task.cancel()
     await task
     assert store.get(pid, "run", run["id"])["status"] == "cancelled"
+    assert store.get(pid, "run", run["id"])["finished_at"]
     assert store.list(pid, "event")[-1]["type"] == "cancelled"
 
 
@@ -163,6 +174,7 @@ async def test_errors_and_model_echo_do_not_leak_secrets(workspace, monkeypatch)
     await Runner(store, pid, run2, settings).execute()
     saved = store.get(pid, "run", run2["id"])
     assert saved["status"] == "failed"
+    assert saved["finished_at"]
     assert "private details" not in saved["error"]
     assert "test-secret-never-return" not in json.dumps(store.list(pid, "event"))
 
@@ -292,27 +304,41 @@ def test_no_vision_config_is_explicitly_pending(workspace):
 
 
 @pytest.mark.asyncio
-async def test_budget_finalization_cannot_execute_fake_or_late_tools(workspace, monkeypatch):
+async def test_soft_deadline_keeps_document_tools_available(workspace, monkeypatch):
     store, pid, settings = workspace
     adapter = MockAdapter(
         [
             {"tool_calls": [tool_call("calculate", expression="2 * 3")]},
-            {
-                "content": '{"name":"write_document","arguments":{"title":"Fake","content":"x"}}',
-                "tool_calls": [tool_call("write_document", title="Forbidden late call", content="x")],
-            },
+            {"tool_calls": [tool_call("write_document", title="Расчёт", content="2 × 3 = 6")]},
+            {"content": "Расчёт сохранён. Проверка единиц ещё нужна."},
         ]
     )
     monkeypatch.setattr("backend.ai.adapter_for", lambda _: adapter)
-    run = new_run(store, pid, max_rounds=2)
-    await Runner(store, pid, run, settings).execute()
+    run = new_run(store, pid)
+    runner = Runner(store, pid, run, settings)
+    original = runner.use_tool
+
+    async def cross_soft_deadline(name, args, agent, depth):
+        result = await original(name, args, agent, depth)
+        if name == "calculate":
+            runner.soft_deadline = asyncio.get_running_loop().time() - 1
+        return result
+
+    monkeypatch.setattr(runner, "use_tool", cross_soft_deadline)
+    await runner.execute()
     saved = store.get(pid, "run", run["id"])
-    assert saved["outcome"] == "budget_limited"
+    assert saved["status"] == "completed"
+    assert saved["outcome"] == "time_limited"
+    assert saved["stop_reason"] == "soft_deadline"
     assert saved["needs_followup"] is True
-    assert saved["usage"]["calls"] == 2
-    assert store.list(pid, "workspace_document") == []
-    assert adapter.requests[-1]["tools"] == []
-    assert any(e["type"] == "limit" for e in store.list(pid, "event"))
+    assert saved["usage"]["calls"] == 3
+    assert store.list(pid, "workspace_document")[0]["content"] == "2 × 3 = 6"
+    grace_tools = {t["function"]["name"] for t in adapter.requests[1]["tools"]}
+    assert "write_document" in grace_tools and "delegate_agent" not in grace_tools
+    assert any(
+        m["role"] == "system" and "Быстро заверши" in m["content"] for m in adapter.requests[1]["messages"]
+    )
+    assert len([e for e in store.list(pid, "event") if e["type"] == "time_limit"]) == 1
 
 
 @pytest.mark.asyncio
@@ -494,3 +520,334 @@ async def test_tiff_vision_converts_actual_image_to_png(workspace, monkeypatch):
     assert adapter.requests[0]["messages"][1]["content"][1]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
+
+
+@pytest.mark.asyncio
+async def test_specialist_can_use_more_than_two_replies_and_no_global_call_cap(workspace, monkeypatch):
+    store, pid, settings = workspace
+    agent = store.put(
+        pid, "agent", {"name": "Расчётчик", "enabled": True, "tools": ["calculator", "documents"]}
+    )
+    adapter = MockAdapter(
+        [
+            {
+                "tool_calls": [
+                    tool_call("delegate_agent", agent_id=agent["id"], instruction="Рассчитай и сохрани")
+                ]
+            },
+            *[{"tool_calls": [tool_call("calculate", expression=f"{i} + 1")]} for i in range(26)],
+            {"tool_calls": [tool_call("write_document", title="Все результаты", content="Расчёты готовы")]},
+            {"content": "Документ сохранён."},
+            {"content": "Команда завершила расчёт."},
+        ]
+    )
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: adapter)
+    run = new_run(store, pid, max_rounds=1)  # Persisted legacy limits are ignored.
+    await Runner(store, pid, run, settings).execute()
+    assert store.get(pid, "run", run["id"])["status"] == "completed"
+    assert store.get(pid, "run", run["id"])["usage"]["calls"] == 30
+    assert store.list(pid, "workspace_document")[0]["content"] == "Расчёты готовы"
+
+
+@pytest.mark.asyncio
+async def test_hard_deadline_cancels_active_provider_after_soft_notice(workspace, monkeypatch):
+    store, pid, settings = workspace
+    cancelled = asyncio.Event()
+    soft_seen = asyncio.Event()
+    observed = []
+
+    class Waiting:
+        async def complete(self, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: Waiting())
+    run = new_run(store, pid, max_runtime_seconds=0.03, shutdown_grace_seconds=0.03)
+    runner = Runner(store, pid, run, settings)
+    original = runner.begin_wrapup
+
+    def begin():
+        original()
+        observed.append(store.get(pid, "run", run["id"])["status"])
+        soft_seen.set()
+
+    monkeypatch.setattr(runner, "begin_wrapup", begin)
+    task = asyncio.create_task(runner.execute())
+    await asyncio.wait_for(task, 2)
+    assert soft_seen.is_set() and observed == ["wrapping_up"]
+    assert cancelled.is_set()
+    saved = store.get(pid, "run", run["id"])
+    assert saved["status"] == "timed_out"
+    assert saved["stop_reason"] == "hard_deadline"
+    assert saved["finished_at"] >= saved["started_at"]
+    assert saved["needs_followup"] is True
+    assert any(e["type"] == "timed_out" for e in store.list(pid, "event"))
+
+
+@pytest.mark.asyncio
+async def test_hard_deadline_cancels_delegated_tool_without_late_write(workspace, monkeypatch):
+    store, pid, settings = workspace
+    agent = store.put(pid, "agent", {"name": "Исследователь", "enabled": True, "tools": ["web"]})
+    adapter = MockAdapter(
+        [
+            {"tool_calls": [tool_call("delegate_agent", agent_id=agent["id"], instruction="Найди данные")]},
+            {"tool_calls": [tool_call("web_search", query="public physics")]},
+        ]
+    )
+    stopped = asyncio.Event()
+
+    async def wait_for_search(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: adapter)
+    monkeypatch.setattr("backend.ai.search_web", wait_for_search)
+    run = new_run(store, pid, max_runtime_seconds=0.03, shutdown_grace_seconds=0.03)
+    runner = Runner(store, pid, run, settings)
+    await asyncio.wait_for(runner.execute(), 2)
+    assert stopped.is_set()
+    assert not runner.active_agents
+    assert store.get(pid, "run", run["id"])["status"] == "timed_out"
+    assert store.list(pid, "workspace_document") == []
+
+
+@pytest.mark.asyncio
+async def test_soft_notice_reaches_specialist_before_returning_to_orchestrator(workspace, monkeypatch):
+    store, pid, settings = workspace
+    agent = store.put(pid, "agent", {"name": "Автор", "enabled": True, "tools": ["documents"]})
+    adapter = MockAdapter(
+        [
+            {
+                "tool_calls": [
+                    tool_call("delegate_agent", agent_id=agent["id"], instruction="Подготовь документ")
+                ]
+            },
+            {"content": "Есть предварительные результаты."},
+            {"tool_calls": [tool_call("write_document", title="Итог", content="Частичный результат")]},
+            {"content": "Результаты сохранены."},
+            {"content": "Работа завершена по имеющимся данным."},
+        ]
+    )
+    run = new_run(store, pid)
+    runner = Runner(store, pid, run, settings)
+    original = adapter.complete
+
+    async def respond(**kwargs):
+        response = await original(**kwargs)
+        if len(adapter.requests) == 2:
+            runner.soft_deadline = asyncio.get_running_loop().time() - 1
+        return response
+
+    monkeypatch.setattr(adapter, "complete", respond)
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: adapter)
+    await runner.execute()
+    notices = [e for e in store.list(pid, "event") if e["type"] == "wrapup_notice"]
+    assert [e["agent_id"] for e in notices] == [agent["id"], None]
+    assert store.list(pid, "workspace_document")[0]["content"] == "Частичный результат"
+
+
+@pytest.mark.asyncio
+async def test_document_aliases_update_append_and_scope(workspace):
+    store, pid, settings = workspace
+    runner = Runner(store, pid, new_run(store, pid), settings)
+    created = await runner.use_tool(
+        "write_document", {"name": "Первый", "markdown": "Часть 1", "document_id": None}, None, 0
+    )
+    assert created["saved"] and created["characters"] == 7
+    updated = await runner.use_tool(
+        "write_document", {"id": created["id"], "text": "\nЧасть 2", "mode": "append"}, None, 0
+    )
+    doc = store.get(pid, "workspace_document", created["id"])
+    assert updated["saved"] and doc["title"] == "Первый" and doc["content"] == "Часть 1\nЧасть 2"
+    source = store.put(pid, "document", {"name": "Источник"})
+    with pytest.raises(ValueError, match="исходного файла"):
+        await runner.use_tool(
+            "write_document", {"document_id": source["id"], "content": "Overwrite?"}, None, 0
+        )
+    other = store.create_project("Other")
+    foreign = store.put(other["id"], "workspace_document", {"title": "Private", "content": "Preserved"})
+    with pytest.raises(ValueError, match="не найден"):
+        await runner.use_tool(
+            "write_document", {"document_id": foreign["id"], "content": "Overwrite?"}, None, 0
+        )
+    assert store.get(other["id"], "workspace_document", foreign["id"])["content"] == "Preserved"
+
+
+@pytest.mark.asyncio
+async def test_write_validation_does_not_truncate_or_coerce(workspace):
+    store, pid, settings = workspace
+    runner = Runner(store, pid, new_run(store, pid), settings)
+    for args in [
+        {"title": "x", "content": None},
+        {"title": "x", "content": {"text": "bad"}},
+        {"title": "x", "content": "A" * 100001},
+        {"title": "A" * 201, "content": "x"},
+        {"title": "x", "content": "x", "text": "conflicting"},
+        {"content": "x", "mode": "append"},
+        {"content": "x", "mode": []},
+        {"content": "x", "path": "/some/file.md"},
+    ]:
+        with pytest.raises(ValueError):
+            await runner.use_tool("write_document", args, None, 0)
+    assert store.list(pid, "workspace_document") == []
+    result = await runner.use_tool("write_document", {"content": "# Название\nТекст"}, None, 0)
+    assert result["title"] == "Название"
+
+
+@pytest.mark.asyncio
+async def test_bad_document_call_is_recoverable_and_not_a_success(workspace, monkeypatch):
+    store, pid, settings = workspace
+    broken = tool_call("write_document", title="Первый", content="bad")
+    broken["function"]["arguments"] = '{"title":"Первый","content":"truncated'
+    adapter = MockAdapter(
+        [
+            {"tool_calls": [broken], "finish_reason": "length"},
+            {"tool_calls": [tool_call("write_document", title="Исправленный", content="Полный текст")]},
+            {"content": "Документ сохранён после исправления."},
+        ]
+    )
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: adapter)
+    run = new_run(store, pid)
+    await Runner(store, pid, run, settings).execute()
+    results = [
+        json.loads(m["content"])["untrusted_tool_data"]
+        for m in adapter.requests[-1]["messages"]
+        if m["role"] == "tool"
+    ]
+    assert results[0]["saved"] is False and "mode=append" in results[0]["error"]
+    assert results[1]["saved"] is True
+    assert len(store.list(pid, "workspace_document")) == 1
+    assert store.get(pid, "run", run["id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_storage_failure_does_not_acknowledge_document(workspace, monkeypatch):
+    store, pid, settings = workspace
+    runner = Runner(store, pid, new_run(store, pid), settings)
+    original = store.put
+
+    def failing_put(pid, kind, data):
+        if kind == "workspace_document":
+            raise OSError("disk unavailable")
+        return original(pid, kind, data)
+
+    monkeypatch.setattr(store, "put", failing_put)
+    with pytest.raises(ValueError, match="Не удалось подтвердить"):
+        await runner.use_tool("write_document", {"title": "x", "content": "text"}, None, 0)
+    assert store.list(pid, "workspace_document") == []
+    assert not runner.sources
+
+
+@pytest.mark.asyncio
+async def test_provider_normalizes_object_tool_arguments(workspace, monkeypatch):
+    _, _, settings = workspace
+    provider = OpenAICompatible(settings.provider())
+
+    async def response(*args):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "write_document",
+                                    "arguments": {"title": "Документ", "content": "Текст"},
+                                }
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "request", response)
+    result = await provider.complete(model="mock", messages=[], tools=[], max_tokens=2048)
+    call = result["tool_calls"][0]
+    assert call["id"] and call["type"] == "function"
+    assert json.loads(call["function"]["arguments"])["content"] == "Текст"
+
+
+def test_runtime_settings_validation_and_legacy_migration(tmp_path):
+    (tmp_path / "settings.private.json").write_text(json.dumps({"max_rounds": 1}))
+    settings = Settings(tmp_path)
+    assert "max_rounds" not in settings.public()
+    assert settings.public()["max_runtime_seconds"] == 600
+    assert settings.public()["shutdown_grace_seconds"] == 60
+    for patch in [
+        {"max_runtime_seconds": 0},
+        {"max_runtime_seconds": True},
+        {"shutdown_grace_seconds": 601},
+        {"max_runtime_seconds": 86401},
+    ]:
+        with pytest.raises(ValueError):
+            settings.update(patch)
+    settings.update({"max_runtime_seconds": 1800, "shutdown_grace_seconds": 120})
+    assert Settings(tmp_path).public()["max_runtime_seconds"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_user_cancel_during_grace_preserves_document(workspace, monkeypatch):
+    from backend.ai import cancel_run
+
+    store, pid, settings = workspace
+    waiting = asyncio.Event()
+    stopped = asyncio.Event()
+    run = new_run(store, pid)
+    runner = Runner(store, pid, run, settings)
+    replies = MockAdapter(
+        [
+            {
+                "tool_calls": [
+                    tool_call("write_document", title="Сохранённый", content="Результаты до отмены")
+                ]
+            },
+        ]
+    )
+
+    async def complete(**kwargs):
+        if replies.replies:
+            result = await replies.complete(**kwargs)
+            runner.soft_deadline = asyncio.get_running_loop().time() - 1
+            return result
+        waiting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr("backend.ai.adapter_for", lambda _: SimpleNamespace(complete=complete))
+    task = asyncio.create_task(runner.execute())
+    await asyncio.wait_for(waiting.wait(), 2)
+    assert store.get(pid, "run", run["id"])["status"] == "wrapping_up"
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(store=store, ai_tasks={run["id"]: task}))
+    )
+    cancelled = await cancel_run(pid, run["id"], request)
+    await task
+    assert stopped.is_set()
+    assert cancelled["status"] == "cancelled" and cancelled["finished_at"]
+    assert store.get(pid, "run", run["id"])["finished_at"] == cancelled["finished_at"]
+    assert store.list(pid, "workspace_document")[0]["content"] == "Результаты до отмены"
+
+
+@pytest.mark.asyncio
+async def test_write_acknowledgement_requires_matching_persisted_content(workspace, monkeypatch):
+    store, pid, settings = workspace
+    runner = Runner(store, pid, new_run(store, pid), settings)
+    original = store.get
+
+    def altered_read(pid, kind, item_id):
+        value = original(pid, kind, item_id)
+        return {**value, "content": "unexpected value"} if kind == "workspace_document" else value
+
+    monkeypatch.setattr(store, "get", altered_read)
+    with pytest.raises(ValueError, match="подтвердить полное"):
+        await runner.use_tool("write_document", {"title": "Test", "content": "Expected"}, None, 0)
+    assert not runner.sources

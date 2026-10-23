@@ -9,18 +9,15 @@ import {
   StickyNote,
   Settings as SettingsIcon,
   Plus,
+  ArrowRight,
   ChevronDown,
   Search,
-  ArrowUpRight,
-  ArrowRight,
-  Command,
-  Activity,
   X,
   Menu,
   FolderOpen,
-  ShieldCheck,
   ChevronRight,
-  FlaskConical,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { api, Item, State, Settings } from "./api";
 import { Button, Modal, Field, IconButton } from "./ui";
@@ -66,6 +63,17 @@ export default function App() {
     [state, setState] = useState<State | null>(null),
     [settings, setSettings] = useState<Settings | null>(null),
     [screen, setScreen] = useState<Screen>("overview");
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try {
+      const saved = localStorage.getItem("science-hub-theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch {}
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("science-hub-theme", theme); } catch {}
+  }, [theme]);
   const [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [projectModal, setProjectModal] = useState(false),
@@ -152,6 +160,7 @@ export default function App() {
     },
     [pid, refresh, onError],
   );
+  useEffect(() => { window.scrollTo(0, 0); }, [screen, pid]);
   const navigate = (next: Screen) => {
     setScreen(next);
     setSidebar(false);
@@ -184,7 +193,7 @@ export default function App() {
     }
   }
   const activeRuns =
-    state?.runs.filter((r) => ["queued", "running"].includes(r.status)) || [];
+    state?.runs.filter((r) => ["queued", "running", "wrapping_up"].includes(r.status)) || [];
   const props: ScreenProps = {
     pid,
     state: state!,
@@ -218,7 +227,7 @@ export default function App() {
           </span>
           <span>
             science<span className="brand-light">hub</span>
-            <small>RESEARCH WORKSPACE</small>
+
           </span>
         </a>
         <div className="project-switch">
@@ -269,18 +278,6 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="local-card">
-            <div>
-              <span className="live-dot" />
-              Локальное пространство
-            </div>
-            <p>
-              Ваши файлы и история
-              <br />
-              остаются на этом устройстве.
-            </p>
-            <ShieldCheck size={31} strokeWidth={1.2} />
-          </div>
           <button
             className={`nav-item ${screen === "settings" ? "active" : ""}`}
             onClick={() => navigate("settings")}
@@ -288,14 +285,7 @@ export default function App() {
             <SettingsIcon size={19} />
             <span>Настройки</span>
           </button>
-          <div className="sidebar-user">
-            <div className="user-avatar">SH</div>
-            <div>
-              <strong>Личная лаборатория</strong>
-              <small>Science Hub · local</small>
-            </div>
-            <span className="local-pip" />
-          </div>
+
         </div>
       </aside>
       <div className="main-shell">
@@ -339,13 +329,13 @@ export default function App() {
               <span />
               {activeRuns.length ? "Команда работает" : "Локально"}
             </span>
-            <button
-              className="top-avatar"
-              onClick={() => navigate("settings")}
-              aria-label="Настройки пространства"
+            <IconButton
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
+              aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"}
             >
-              A
-            </button>
+              {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
+            </IconButton>
           </div>
         </header>
         <main className={`content content-${screen}`}>
@@ -364,82 +354,13 @@ export default function App() {
               <p>Открываем лабораторию…</p>
             </div>
           ) : !pid ? (
-            <div className="welcome">
-              <div className="welcome-copy">
-                <span className="eyebrow">
-                  <span className="live-dot" /> ВАША ЛОКАЛЬНАЯ ЛАБОРАТОРИЯ
-                </span>
-                <h1>
-                  От первого вопроса
-                  <br />
-                  до <em>сильного решения.</em>
-                </h1>
-                <p>
-                  Соберите источники, пригласите AI-команду и дайте вашим идеям
-                  пространство для роста.
-                </p>
-                <Button onClick={() => setProjectModal(true)}>
-                  <Plus size={18} />
-                  Создать первый проект
-                  <ArrowRight size={17} />
-                </Button>
-                <span className="welcome-note">
-                  <ShieldCheck size={14} />
-                  Файлы и история хранятся на вашем устройстве
-                </span>
-              </div>
-              <div className="welcome-illustration">
-                <div className="orbit orbit-one" />
-                <div className="orbit orbit-two" />
-                <div className="illustration-center">
-                  <Atom size={56} strokeWidth={1} />
-                </div>
-                <div className="floating-card float-one">
-                  <Library size={20} />
-                  <span>
-                    Знания<strong>У каждого вывода — источник</strong>
-                  </span>
-                </div>
-                <div className="floating-card float-two">
-                  <Users size={20} />
-                  <span>
-                    Команда<strong>Разные взгляды. Общая задача.</strong>
-                  </span>
-                </div>
-                <div className="floating-card float-three">
-                  <Network size={20} />
-                  <span>
-                    Решения<strong>Связи, которые имеют значение</strong>
-                  </span>
-                </div>
-                <span className="orbit-point point-one" />
-                <span className="orbit-point point-two" />
-              </div>
-              <div className="welcome-steps">
-                {[
-                  {
-                    n: "01",
-                    title: "Добавьте контекст",
-                    text: "Документы, изображения, заметки — всё в одной базе знаний.",
-                  },
-                  {
-                    n: "02",
-                    title: "Задайте направление",
-                    text: "Оркестратор подключит нужных специалистов и инструменты.",
-                  },
-                  {
-                    n: "03",
-                    title: "Проверьте результат",
-                    text: "Обсуждения, источники и решения остаются в вашем проекте.",
-                  },
-                ].map((item) => (
-                  <div key={item.n}>
-                    <span>{item.n}</span>
-                    <h3>{item.title}</h3>
-                    <p>{item.text}</p>
-                  </div>
-                ))}
-              </div>
+            <div className="welcome workspace-welcome">
+              <FolderOpen size={36} strokeWidth={1.5} />
+              <h1>Создайте проект</h1>
+              <p>В проекте хранятся источники, переписка с оркестратором и результаты работы агентов.</p>
+              <Button onClick={() => setProjectModal(true)}>
+                <Plus size={18} /> Создать проект
+              </Button>
             </div>
           ) : !state ? (
             <div className="loading-page">
@@ -460,13 +381,7 @@ export default function App() {
             <BoardScreen {...props} />
           )}
         </main>
-        <footer className="app-footer">
-          <span>SCIENCE HUB</span>
-          <span>Место, где идеи становятся знаниями.</span>
-          <span>
-            LOCAL WORKSPACE <span className="live-dot" />
-          </span>
-        </footer>
+
       </div>
       {error && (
         <div className="toast" role="alert">

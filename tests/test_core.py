@@ -80,9 +80,110 @@ def test_project_seed_empty_state_and_names(client):
         "estimator",
         "pessimist",
     }
-    assert state["documents"] == state["claims"] == state["messages"] == []
+    assert state["documents"] == state["folders"] == state["claims"] == state["messages"] == []
     assert client.post("/api/projects", json={"name": "  "}).status_code == 422
     assert client.patch(f"/api/projects/{pid}", json={"name": "Название"}).json()["name"] == "Название"
+
+
+def test_library_folders_persist_move_and_preserve_contents(client):
+    pid = project(client)
+    base = f"/api/projects/{pid}"
+    root = client.post(base + "/folders", json={"name": "  Проектирование  "}).json()
+    assert root["name"] == "Проектирование" and root["parent_id"] is None
+    child = client.post(base + "/folders", json={"name": "Расчёты", "parent_id": root["id"]}).json()
+    nested = client.post(base + "/folders", json={"name": "Архив", "parent_id": child["id"]}).json()
+    document = client.post(
+        base + "/documents",
+        files={"files": ("calculation.txt", "Сохраняемый расчёт".encode())},
+        data={"folder_id": child["id"]},
+    ).json()[0]
+    did = document["id"]
+    assert document["folder_id"] == child["id"]
+    stored_file = client.app.state.store.file_path(
+        client.app.state.store.get(pid, "document", did)["file_path"]
+    )
+    annotation = client.post(base + "/annotations", json={"document_id": did, "note": "Проверить"}).json()
+    assert (
+        client.patch(base + f"/folders/{child['id']}", json={"name": "Вычисления"}).json()["parent_id"]
+        == root["id"]
+    )
+    assert client.patch(base + f"/documents/{did}", json={"folder_id": None}).json()["folder_id"] is None
+    assert client.patch(base + f"/documents/{did}", json={"folder_id": child["id"]}).status_code == 200
+    assert (
+        client.patch(base + f"/documents/{did}", json={"description": "Примечание"}).json()["folder_id"]
+        == child["id"]
+    )
+    # Reopening the database preserves both hierarchy and document membership.
+    client.app.state.store = Store(client.app.state.store.root)
+    state = client.get(base + "/state").json()
+    assert len(state["folders"]) == 3 and state["documents"][0]["folder_id"] == child["id"]
+    assert client.delete(base + f"/folders/{child['id']}").status_code == 204
+    state = client.get(base + "/state").json()
+    assert state["documents"][0]["folder_id"] == root["id"]
+    assert next(item for item in state["folders"] if item["id"] == nested["id"])["parent_id"] == root["id"]
+    assert state["annotations"][0]["id"] == annotation["id"] and stored_file.is_file()
+    assert client.delete(base + f"/folders/{root['id']}").status_code == 204
+    state = client.get(base + "/state").json()
+    assert state["documents"][0]["folder_id"] is None and state["folders"][0]["parent_id"] is None
+    assert client.get(base + f"/documents/{did}").json()["text"] == "Сохраняемый расчёт"
+    assert upload(client, pid)["folder_id"] is None
+
+
+def test_library_folders_validate_cycles_and_project_isolation(client):
+    one, two = project(client), project(client)
+    base, other = f"/api/projects/{one}", f"/api/projects/{two}"
+    root = client.post(base + "/folders", json={"name": "Папка"}).json()
+    child = client.post(base + "/folders", json={"name": "Дочерняя", "parent_id": root["id"]}).json()
+    did = upload(client, two)["id"]
+    for parent_id in (root["id"], child["id"]):
+        assert client.patch(base + f"/folders/{root['id']}", json={"parent_id": parent_id}).status_code == 422
+    for name in ("", "   ", "a" * 201):
+        assert client.post(base + "/folders", json={"name": name}).status_code == 422
+    for parent_id in (root["id"], "missing", did):
+        assert (
+            client.post(other + "/folders", json={"name": "Чужая", "parent_id": parent_id}).status_code == 404
+        )
+        assert client.patch(other + f"/documents/{did}", json={"folder_id": parent_id}).status_code == 404
+        assert (
+            client.post(
+                other + "/documents", files={"files": ("new.txt", b"content")}, data={"folder_id": parent_id}
+            ).status_code
+            == 404
+        )
+    assert client.patch(other + f"/folders/{root['id']}", json={"name": "Чужая"}).status_code == 404
+    assert client.delete(other + f"/folders/{root['id']}").status_code == 404
+    assert (
+        client.patch(base + f"/folders/{child['id']}", json={"parent_id": None}).json()["parent_id"] is None
+    )
+    assert client.get(base + "/state").json()["documents"] == []
+    assert client.get(other + "/state").json()["folders"] == []
+    assert len(client.get(other + "/state").json()["documents"]) == 1
+
+
+def test_library_folder_validation_is_atomic_in_storage(tmp_path):
+    store = Store(tmp_path)
+    pid = store.create_project("Проект")["id"]
+    first = store.put(pid, "folder", {"name": "Первая"})
+    second = store.put(pid, "folder", {"name": "Вторая"})
+
+    def move(pair):
+        folder, parent = pair
+        try:
+            store.put(pid, "folder", {**folder, "parent_id": parent["id"]})
+        except ValueError:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(move, [(first, second), (second, first)]))
+    assert sorted(results) == [False, True]
+    reopened = Store(tmp_path)
+    folders = reopened.list(pid, "folder")
+    assert sum(folder["parent_id"] is None for folder in folders) == 1
+    with pytest.raises(KeyError):
+        reopened.put(pid, "document", {"name": "source.txt", "folder_id": "missing"})
+    with pytest.raises(KeyError):
+        reopened.put(pid, "folder", {"name": "Missing parent", "parent_id": "missing"})
 
 
 def test_annotations_preserve_page_offsets_and_search_all_sources(client):

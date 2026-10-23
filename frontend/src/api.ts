@@ -2,6 +2,7 @@ export type Item = Record<string, any> & { id: string };
 export type State = {
   project: Item;
   documents: Item[];
+  folders: Item[];
   annotations: Item[];
   agents: Item[];
   messages: Item[];
@@ -26,7 +27,8 @@ export type Settings = {
   default_provider_id: string;
   orchestrator_model: string;
   vision_model: string;
-  max_rounds: number;
+  max_runtime_seconds: number;
+  shutdown_grace_seconds: number;
   max_tokens: number;
 };
 export async function api<T = any>(

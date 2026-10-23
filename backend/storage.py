@@ -13,6 +13,7 @@ from uuid import uuid4
 KINDS = frozenset(
     {
         "document",
+        "folder",
         "annotation",
         "agent",
         "message",
@@ -144,6 +145,36 @@ class Store:
                 raise KeyError("Object not found in this project")
             return json.loads(row[0])
 
+    @staticmethod
+    def _validate_library_location(db, project_id: str, kind: str, item_id: str, data: dict):
+        """Validate library references in the transaction that writes the object."""
+        if kind not in {"document", "folder"}:
+            return
+        field = "parent_id" if kind == "folder" else "folder_id"
+        data.setdefault(field, None)
+        parent_id = data[field]
+        if parent_id is not None and (
+            not isinstance(parent_id, str) or not parent_id or len(parent_id) > 200
+        ):
+            raise ValueError("Некорректный идентификатор папки.")
+        if kind == "folder":
+            name = data.get("name")
+            if not isinstance(name, str) or not name.strip() or len(name) > 200:
+                raise ValueError("Название папки должно содержать от 1 до 200 символов.")
+            data["name"] = name.strip()
+        visited = {item_id} if kind == "folder" else set()
+        while parent_id is not None:
+            if parent_id in visited:
+                raise ValueError("Папки не могут образовывать цикл.")
+            visited.add(parent_id)
+            row = db.execute(
+                "SELECT data FROM objects WHERE project_id=? AND kind='folder' AND id=?",
+                (project_id, parent_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Folder not found in this project")
+            parent_id = json.loads(row[0]).get("parent_id")
+
     def put(self, project_id: str, kind: str, data: dict) -> dict:
         self._kind(kind)
         result = dict(data)
@@ -153,12 +184,16 @@ class Store:
         if not isinstance(item_id, str) or not item_id or len(item_id) > 200:
             raise ValueError("Invalid object identifier")
         with self.connection() as db:
+            # Serialize validation + writes so simultaneous folder moves cannot
+            # each pass validation and together form a cycle.
+            db.execute("BEGIN IMMEDIATE")
             self._project(db, project_id)
             existing = db.execute(
                 "SELECT project_id,kind,data FROM objects WHERE id=?", (item_id,)
             ).fetchone()
             if existing and (existing[0] != project_id or existing[1] != kind):
                 raise KeyError("Object does not belong to this project or kind")
+            self._validate_library_location(db, project_id, kind, item_id, result)
             previous = json.loads(existing[2]) if existing else {}
             timestamp = now()
             result.update(
@@ -176,6 +211,7 @@ class Store:
     def delete(self, project_id: str, kind: str, item_id: str):
         self._kind(kind)
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
             self._project(db, project_id)
             row = db.execute(
                 "SELECT data FROM objects WHERE project_id=? AND kind=? AND id=?", (project_id, kind, item_id)
@@ -211,6 +247,13 @@ class Store:
                     db.execute("DELETE FROM objects WHERE id=?", (related_id,))
                     continue
                 changed = False
+                # Deleting a library folder preserves everything it contained.
+                # Promotion and deletion commit together, including nested folders.
+                if kind == "folder":
+                    field = "parent_id" if related_kind == "folder" else "folder_id"
+                    if related_kind in {"folder", "document"} and item.get(field) == item_id:
+                        item[field] = deleted.get("parent_id")
+                        changed = True
                 if related_kind == "decision" and item.get("parent_id") in removed:
                     item["parent_id"] = None
                     changed = True
