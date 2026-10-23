@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Atom,
-  LayoutDashboard,
+  MessagesSquare,
+  MessageSquare,
+  SquarePen,
   Library,
   Users,
   FileText,
@@ -48,9 +50,12 @@ export type ScreenProps = {
     end?: number,
   ) => void;
   navigate: (screen: Screen) => void;
+  activeChatId: string;
+  selectChat: (id: string) => void;
+  newChat: () => Promise<Item | undefined>;
 };
 const nav = [
-  { id: "overview", label: "Рабочий стол", icon: LayoutDashboard },
+  { id: "overview", label: "Чаты", icon: MessagesSquare },
   { id: "library", label: "База знаний", icon: Library },
   { id: "agents", label: "Офис агентов", icon: Users },
   { id: "documents", label: "Документы", icon: FileText },
@@ -62,7 +67,9 @@ export default function App() {
     [pid, setPid] = useState(localStorage.getItem("science-hub-project") || ""),
     [state, setState] = useState<State | null>(null),
     [settings, setSettings] = useState<Settings | null>(null),
-    [screen, setScreen] = useState<Screen>("overview");
+    [screen, setScreen] = useState<Screen>("overview"),
+    [activeChatId, setActiveChatId] = useState(""),
+    [creatingChat, setCreatingChat] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try {
       const saved = localStorage.getItem("science-hub-theme");
@@ -119,6 +126,7 @@ export default function App() {
     localStorage.setItem("science-hub-project", pid);
     setState(null);
     setViewer(null);
+    try { setActiveChatId(localStorage.getItem(`science-hub-chat-${pid}`) || ""); } catch { setActiveChatId(""); }
     if (!pid) return;
     let alive = true;
     let busy = false;
@@ -160,6 +168,34 @@ export default function App() {
     },
     [pid, refresh, onError],
   );
+  useEffect(() => {
+    if (!state || state.project.id !== pid) return;
+    const chats = state.chats || [];
+    if (!chats.some((chat) => chat.id === activeChatId)) {
+      setActiveChatId(chats.at(-1)?.id || "");
+    }
+  }, [state, activeChatId, pid]);
+  useEffect(() => {
+    if (pid && activeChatId && state?.project.id === pid && state.chats?.some((chat) => chat.id === activeChatId)) {
+      try { localStorage.setItem(`science-hub-chat-${pid}`, activeChatId); } catch {}
+    }
+  }, [pid, activeChatId, state]);
+  async function newChat() {
+    if (creatingChat || !pid) return;
+    setCreatingChat(true);
+    try {
+      const chat = await mutate("/chats", {});
+      if (currentPid.current !== pid) return undefined;
+      setActiveChatId(chat.id);
+      setScreen("overview");
+      setSidebar(false);
+      return chat as Item;
+    } catch {
+      return undefined;
+    } finally {
+      setCreatingChat(false);
+    }
+  }
   useEffect(() => { window.scrollTo(0, 0); }, [screen, pid]);
   const navigate = (next: Screen) => {
     setScreen(next);
@@ -203,6 +239,9 @@ export default function App() {
     onError,
     openDocument,
     navigate,
+    activeChatId,
+    selectChat: (id) => { setActiveChatId(id); navigate("overview"); },
+    newChat,
   };
   return (
     <div className="app-shell">
@@ -277,6 +316,35 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {state && (
+          <section className="sidebar-chats" aria-label="Чаты проекта">
+            <div className="sidebar-chats-heading">
+              <span className="side-label">ЧАТЫ ПРОЕКТА</span>
+              <button onClick={() => void newChat()} disabled={creatingChat} aria-label="Новый чат" title="Новый чат">
+                <SquarePen size={17} />
+              </button>
+            </div>
+            <button className="sidebar-new-chat" onClick={() => void newChat()} disabled={creatingChat}>
+              <Plus size={16} /> {creatingChat ? "Создаём чат…" : "Новый чат"}
+            </button>
+            <div className="sidebar-chat-list">
+              {(state.chats || []).slice().reverse().map((chat) => (
+                <button
+                  key={chat.id}
+                  className={`sidebar-chat ${screen === "overview" && activeChatId === chat.id ? "active" : ""}`}
+                  aria-current={screen === "overview" && activeChatId === chat.id ? "page" : undefined}
+                  title={chat.title || "Новый чат"}
+                  onClick={() => { setActiveChatId(chat.id); navigate("overview"); }}
+                >
+                  <MessageSquare size={15} />
+                  <span>{chat.title || "Новый чат"}</span>
+                  {activeRuns.some((run) => run.chat_id === chat.id) && <span className="live-dot" />}
+                </button>
+              ))}
+              {!state.chats?.length && <p>Начните отдельный разговор по любой задаче проекта.</p>}
+            </div>
+          </section>
+        )}
         <div className="sidebar-bottom">
           <button
             className={`nav-item ${screen === "settings" ? "active" : ""}`}

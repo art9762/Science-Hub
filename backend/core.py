@@ -52,6 +52,24 @@ class FolderInput(Payload):
     parent_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class ChatInput(Payload):
+    title: str = Field(default="Новый чат", min_length=1, max_length=200)
+
+
+class WebSourceInput(Payload):
+    url: str = Field(min_length=1, max_length=4000)
+    title: str = Field(default="", max_length=2000)
+    snippet: str = Field(default="", max_length=20000)
+    source: str = Field(default="web", max_length=100)
+    folder_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class YouTubeInput(Payload):
+    url: str = Field(min_length=1, max_length=4000)
+    language: str | None = Field(default=None, max_length=30)
+    folder_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class AnnotationInput(Payload):
     document_id: str
     page: int = Field(default=1, ge=1)
@@ -279,11 +297,13 @@ async def delete_project(pid: str, request: Request):
 @router.get("/projects/{pid}/state")
 def state(pid: str, request: Request):
     store = store_for(request)
+    store.ensure_chats(pid)
     result = {"project": store.project(pid)}
     for plural, kind in (
         ("documents", "document"),
         ("folders", "folder"),
         ("agents", "agent"),
+        ("chats", "chat"),
         ("messages", "message"),
         ("runs", "run"),
         ("events", "event"),
@@ -297,6 +317,68 @@ def state(pid: str, request: Request):
         result[plural] = store.list(pid, kind)
     result["documents"] = [document_public(item, summary=True) for item in result["documents"]]
     return result
+
+
+@router.get("/projects/{pid}/chats")
+def chats(pid: str, request: Request):
+    store = store_for(request)
+    store.ensure_chats(pid)
+    return store.list(pid, "chat")
+
+
+@router.post("/projects/{pid}/chats", status_code=201)
+def create_chat(pid: str, body: ChatInput, request: Request):
+    _named(body.model_dump(), "title")
+    return store_for(request).put(pid, "chat", {"title": body.title.strip()})
+
+
+@router.patch("/projects/{pid}/chats/{item_id}")
+def rename_chat(pid: str, item_id: str, body: ChatInput, request: Request):
+    _named(body.model_dump(), "title")
+    store = store_for(request)
+    return store.put(pid, "chat", {**store.get(pid, "chat", item_id), "title": body.title.strip()})
+
+
+@router.delete("/projects/{pid}/chats/{item_id}", status_code=204)
+async def delete_chat(pid: str, item_id: str, request: Request):
+    store = store_for(request)
+    store.get(pid, "chat", item_id)
+    tasks = getattr(request.app.state, "ai_tasks", {})
+    pending = [tasks[run["id"]] for run in store.list(pid, "run") if run.get("chat_id") == item_id and run["id"] in tasks]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    store.delete(pid, "chat", item_id)
+
+
+@router.post("/projects/{pid}/documents/web", status_code=201)
+def import_web_source(pid: str, body: WebSourceInput, request: Request):
+    from .sources import save_web_source
+
+    store = store_for(request)
+    store.project(pid)
+    if body.folder_id:
+        store.get(pid, "folder", body.folder_id)
+    try:
+        return document_public(save_web_source(store, pid, body.model_dump(), folder_id=body.folder_id))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@router.post("/projects/{pid}/documents/youtube", status_code=201)
+async def import_youtube(pid: str, body: YouTubeInput, request: Request):
+    from .youtube import parse_youtube
+
+    store = store_for(request)
+    store.project(pid)
+    if body.folder_id:
+        store.get(pid, "folder", body.folder_id)
+    try:
+        parsed = await run_in_threadpool(parse_youtube, body.url, body.language)
+        return document_public(store.put(pid, "document", {**parsed, "folder_id": body.folder_id}))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @router.post("/projects/{pid}/documents", status_code=201)
@@ -402,6 +484,12 @@ async def delete_document(pid: str, item_id: str, request: Request):
 def document_file(pid: str, item_id: str, request: Request):
     store = store_for(request)
     document = store.get(pid, "document", item_id)
+    if not document.get("file_path") and document.get("source_type") in {"web", "youtube"}:
+        filename = safe_filename(document["name"]) + ".txt"
+        return Response(document.get("text", "").encode("utf-8"), media_type="text/plain; charset=utf-8", headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "Content-Security-Policy": "sandbox",
+        })
     try:
         path = store.file_path(document["file_path"])
     except (ValueError, KeyError):

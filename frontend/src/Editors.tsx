@@ -56,7 +56,19 @@ const toolOptions = [
   ["remember", "Память проекта"],
   ["delegate_agent", "Привлечение специалистов"],
   ["link_entities", "Связи в графе"],
+  ["list_project_entities", "Обзор всех разделов проекта"],
+  ["read_project_entity", "Чтение объектов проекта"],
+  ["create_board_item", "Создание карточек доски"],
+  ["update_board_item", "Редактирование доски"],
+  ["delete_board_item", "Удаление карточек доски"],
+  ["delete_link", "Удаление связей"],
+  ["import_youtube", "Импорт YouTube"],
 ];
+const sharedTools = new Set([
+  "search_knowledge", "read_document", "read_working_document", "list_project_entities",
+  "read_project_entity", "create_board_item", "update_board_item", "delete_board_item",
+  "link_entities", "delete_link", "import_youtube",
+]);
 const roleNames: Record<string, string> = {
   engineer: "Конструкция и проектирование",
   analyst: "Анализ данных и выводов",
@@ -296,13 +308,14 @@ export function AgentsScreen({ state, settings, mutate }: ScreenProps) {
                       ))}
                   </datalist>
                 </Field>
-                <Field label="Инструменты">
+                <Field label="Инструменты" hint="Чтение проекта, доска, связи и импорт YouTube доступны всей команде. Остальные инструменты можно настроить для роли.">
                   <div className="tool-checklist">
                     {toolOptions.map(([id, label]) => (
                       <label key={id}>
                         <input
                           type="checkbox"
-                          checked={edit.tools?.includes(id) || false}
+                          checked={sharedTools.has(id) || edit.tools?.includes(id) || false}
+                          disabled={sharedTools.has(id)}
                           onChange={(e) =>
                             setEdit({
                               ...edit,

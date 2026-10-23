@@ -30,6 +30,7 @@ import {
   Filter,
   X,
   FileCheck,
+  Youtube,
 } from "lucide-react";
 import { ScreenProps } from "./App";
 import { api, bytes, date, Item, fileUrl, safeUrl } from "./api";
@@ -69,7 +70,16 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
     [webResults, setWebResults] = useState<any[] | null>(null),
     [source, setSource] = useState("auto"),
     [webBusy, setWebBusy] = useState(false),
-    [webSaved, setWebSaved] = useState<string[]>([]);
+    [webSaved, setWebSaved] = useState<string[]>([]),
+    [webSaving, setWebSaving] = useState<string | null>(null),
+    [youtubeOpen, setYoutubeOpen] = useState(false),
+    [youtubeUrl, setYoutubeUrl] = useState(""),
+    [youtubeLanguage, setYoutubeLanguage] = useState(""),
+    [youtubeFolder, setYoutubeFolder] = useState(""),
+    [youtubeError, setYoutubeError] = useState(""),
+    [youtubeBusy, setYoutubeBusy] = useState(false);
+  const savedSourceUrls = new Set([...webSaved, ...state.documents.map((d) => d.source_url || d.url || d.metadata?.url).filter(Boolean)]);
+  useEffect(() => { setWebSaved([]); }, [pid]);
   const input = useRef<HTMLInputElement>(null);
   const folders = state.folders || [];
   const folderById = new Map(folders.map((f) => [f.id, f]));
@@ -233,6 +243,28 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
       setWebResults(await api(`/search/web?q=${encodeURIComponent(query)}&source=${source}`));
     } catch (e) { onError(e); } finally { setWebBusy(false); }
   }
+  async function importYoutube(e: React.FormEvent) {
+    e.preventDefault();
+    if (!youtubeUrl.trim()) return;
+    setYoutubeBusy(true);
+    setYoutubeError("");
+    try {
+      const document = await mutate("/documents/youtube", {
+        url: youtubeUrl.trim(), folder_id: youtubeFolder || null,
+        ...(youtubeLanguage.trim() ? { language: youtubeLanguage.trim() } : {}),
+      });
+      setYoutubeOpen(false);
+      setYoutubeUrl("");
+      setTab("local");
+      setFolderId(youtubeFolder || null);
+      setCategory("Все материалы");
+      setQuery("");
+      setNotice("Расшифровка YouTube добавлена в базу знаний и доступна агентам.");
+      if (document?.id) openDocument(document.id);
+    } catch (error) {
+      setYoutubeError(error instanceof Error ? error.message : "Не удалось импортировать видео.");
+    } finally { setYoutubeBusy(false); }
+  }
   return (
     <div className="library-workspace">
       <SectionTitle
@@ -240,6 +272,7 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
         description={`${state.documents.length} материалов · ${folders.length} папок`}
         action={<div className="library-create-actions">
           <Button variant="secondary" onClick={newFolder}><FolderPlus size={17} />Новая папка</Button>
+          <Button variant="secondary" onClick={() => { setYoutubeFolder(folderId || ""); setYoutubeError(""); setYoutubeOpen(true); }}><Youtube size={17} />YouTube</Button>
           <Button onClick={() => input.current?.click()} busy={uploading}><Plus size={17} />Добавить файлы</Button>
         </div>}
       />
@@ -282,7 +315,7 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
           {webResults === null ? (
             <Empty icon={Globe} title="Расширьте границы исследования">
               Найдите публикации и открытые проекты. Сохраняйте полезные ссылки
-              на доску проекта.
+              в базу знаний проекта, чтобы использовать их в работе агентов.
             </Empty>
           ) : !webResults.length ? (
             <Empty icon={Search} title="Источники не найдены">
@@ -303,28 +336,25 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
                   <small>{r.url}</small>
                   <Button
                     variant="secondary small"
-                    disabled={webSaved.includes(r.url)}
+                    disabled={savedSourceUrls.has(r.url) || webSaving !== null}
+                    busy={webSaving === r.url}
                     onClick={async () => {
+                      setWebSaving(r.url);
                       try {
-                        await mutate("/board-items", {
-                          type: "research",
-                          text: `${r.title}\n${r.snippet}\n${r.url}`,
-                          x: 60 + (webSaved.length % 3) * 280,
-                          y: 60 + Math.floor(webSaved.length / 3) * 220,
-                          width: 260,
-                          height: 200,
-                          color: "#e4ece6",
+                        await mutate("/documents/web", {
+                          title: r.title, url: r.url, snippet: r.snippet,
+                          source: r.source, folder_id: folderId,
                         });
-                        setWebSaved([...webSaved, r.url]);
-                      } catch {}
+                        setWebSaved((saved) => [...saved, r.url]);
+                      } catch {} finally { setWebSaving(null); }
                     }}
                   >
-                    {webSaved.includes(r.url) ? (
+                    {savedSourceUrls.has(r.url) ? (
                       <Check size={14} />
                     ) : (
                       <Plus size={14} />
                     )}
-                    На доску
+                    {savedSourceUrls.has(r.url) ? "В базе знаний" : "В базу знаний"}
                   </Button>
                 </div>
               </article>
@@ -399,7 +429,7 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
                 {view === "list" && <div className="document-table-head"><span>МАТЕРИАЛ</span><span>КАТЕГОРИЯ</span><span>ДОБАВЛЕН</span><span /></div>}
                 {docs.map((d) => <article className="document-row" key={d.id} draggable onDragStart={(e) => startDrag(e, "document", d.id)} onDragEnd={endDrag}>
                   <button className="document-main" draggable onDragStart={(e) => startDrag(e, "document", d.id)} onClick={() => openDocument(d.id)}><DocIcon mime={d.mime_type} name={d.name} /><span><strong title={d.name}>{d.name}</strong>
-                    <small>{bytes(d.size || 0)} · {d.page_count ? `${d.page_count} стр.` : d.mime_type?.startsWith("image/") ? "Изображение" : "Документ"}
+                    <small>{d.source_type === "youtube" ? "YouTube · Субтитры" : d.source_type === "web" ? "Веб-источник" : `${bytes(d.size || 0)} · ${d.page_count ? `${d.page_count} стр.` : d.mime_type?.startsWith("image/") ? "Изображение" : "Документ"}`}
                       {d.status && d.status !== "ready" ? ` · ${({ processed: "Обработан", uploaded: "Загружен", error: "Ошибка", needs_ocr: "Нужен OCR", unsupported: "Без извлечения текста" } as any)[d.status] || d.status}` : ""}</small>
                   </span></button>
                   <Tag>{d.category || "Без категории"}</Tag><time>{date(d.created_at)}</time>
@@ -421,6 +451,20 @@ export function LibraryScreen(props: ScreenProps & { globalQuery: string }) {
           </section>
         </div>
       )}
+      {youtubeOpen && <Modal title="Добавить видео YouTube" subtitle="Субтитры станут материалом базы знаний" onClose={() => { if (!youtubeBusy) setYoutubeOpen(false); }}>
+        <form onSubmit={importYoutube} className="youtube-import-form">
+          <Field label="Ссылка на видео"><input autoFocus required maxLength={2048} value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" disabled={youtubeBusy} /></Field>
+          <Field label="Язык субтитров"><select value={youtubeLanguage} onChange={(e) => setYoutubeLanguage(e.target.value)} disabled={youtubeBusy}>
+            <option value="">Автовыбор: русский, английский, доступный язык</option><option value="ru">Русский</option><option value="en">Английский</option>
+          </select></Field>
+          <Field label="Папка"><select value={youtubeFolder} onChange={(e) => setYoutubeFolder(e.target.value)} disabled={youtubeBusy}><option value="">Корень базы знаний</option>
+            {orderedFolders.map((f) => <option key={f.id} value={f.id}>{folderPath(f.id).map((p) => p.name).join(" / ")}</option>)}
+          </select></Field>
+          <p className="youtube-import-help">Импортируются доступные субтитры с временными метками. Агенты смогут читать их и ссылаться на фрагменты видео. Кадры и звук не анализируются. Если субтитров нет или YouTube ограничивает доступ, загрузите расшифровку вручную как TXT или Markdown.</p>
+          {youtubeError && <p className="youtube-import-error" role="alert">{youtubeError}</p>}
+          <div className="modal-actions"><Button type="button" variant="secondary" disabled={youtubeBusy} onClick={() => setYoutubeOpen(false)}>Отмена</Button><Button busy={youtubeBusy} disabled={!youtubeUrl.trim()}>Добавить расшифровку</Button></div>
+        </form>
+      </Modal>}
       {folderEdit && <Modal title={folderEdit.id ? "Переименовать папку" : "Новая папка"} subtitle={`В папке: ${folderEdit.parent_id ? folderById.get(folderEdit.parent_id)?.name : "Корень базы знаний"}`} onClose={() => setFolderEdit(null)}>
         <form onSubmit={async (e) => { e.preventDefault(); if (!folderEdit.name.trim()) return; setSaving(true);
           try { await mutate(folderEdit.id ? `/folders/${folderEdit.id}` : "/folders", { name: folderEdit.name.trim(), ...(folderEdit.id ? {} : { parent_id: folderEdit.parent_id }) }, folderEdit.id ? "PATCH" : "POST"); setFolderEdit(null); } catch {} finally { setSaving(false); }
@@ -604,6 +648,13 @@ export function DocumentViewer({
   }, [pid, target.id, target.page, onError]);
   const pages = doc?.pages || [];
   const pageText = pages.find((p: any) => p.number === page)?.text || "";
+  const sourceUrl = doc?.source_url || doc?.url || doc?.metadata?.url;
+  const isYoutube = doc?.source_type === "youtube";
+  const pageSegments = pages.find((p: any) => p.number === page)?.segments || [];
+  const segmentTime = (seconds: number) => {
+    const value = Math.floor(seconds), hours = Math.floor(value / 3600);
+    return `${hours ? `${hours}:` : ""}${String(Math.floor(value / 60) % 60).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  };
   const annotations = (state.annotations || []).filter(
     (a) => a.document_id === target.id,
   );
@@ -762,19 +813,26 @@ export function DocumentViewer({
             onClick={() => setTab("original")}
           >
             <Image size={15} />
-            Оригинал
+            {sourceUrl ? "Источник" : "Оригинал"}
           </button>
         </div>
         <a
           className="button secondary small"
-          href={fileUrl(pid, target.id)}
+          href={sourceUrl ? safeUrl(sourceUrl) : fileUrl(pid, target.id)}
           target="_blank"
           rel="noreferrer"
         >
-          <Download size={14} />
-          Открыть файл
+          {sourceUrl ? <ExternalLink size={14} /> : <Download size={14} />}
+          {isYoutube ? "Открыть видео" : sourceUrl ? "Открыть источник" : "Открыть файл"}
         </a>
       </div>
+      {sourceUrl && <div className="document-source-strip">
+        {isYoutube ? <Youtube size={18} /> : <Globe size={18} />}
+        <span><strong>{isYoutube ? "Расшифровка YouTube" : "Веб-источник"}</strong>
+          {isYoutube && <small>{[doc?.metadata?.author, doc?.metadata?.language, doc?.metadata?.is_generated ? "Автоматические субтитры" : "Авторские субтитры"].filter(Boolean).join(" · ")}</small>}
+          <a href={safeUrl(sourceUrl)} target="_blank" rel="noreferrer">{sourceUrl}</a>
+        </span>
+      </div>}
       {doc &&
         (doc.warnings?.length > 0 ||
           doc.vision_error ||
@@ -809,7 +867,17 @@ export function DocumentViewer({
                 <Loader2 className="spin" />
               </div>
             ) : tab === "original" ? (
-              doc.mime_type?.startsWith("image/") ? (
+              sourceUrl ? (
+                <div className="source-document-preview">
+                  <h3>{doc.name}</h3>
+                  <p>{doc.description}</p>
+                  <a className="button secondary small" href={safeUrl(sourceUrl)} target="_blank" rel="noreferrer"><ExternalLink size={15} />{isYoutube ? "Смотреть на YouTube" : "Перейти к источнику"}</a>
+                  {isYoutube && pageSegments.length > 0 && <div className="youtube-segments">
+                    <h4>Фрагменты текущей страницы</h4>
+                    {pageSegments.map((segment: any, i: number) => <a key={i} href={safeUrl(segment.url)} target="_blank" rel="noreferrer"><time>{segmentTime(segment.start)}</time><span>{segment.text}</span><ExternalLink size={12} /></a>)}
+                  </div>}
+                </div>
+              ) : doc.mime_type?.startsWith("image/") ? (
                 <>
                   <img
                     className="original-image"

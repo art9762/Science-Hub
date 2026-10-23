@@ -15,6 +15,7 @@ dependencies = [
   "reportlab>=4,<5",
   "pytesseract>=0.3.13,<1",
   "PyMuPDF>=1.25,<2",
+  "youtube-transcript-api>=1.2,<2",
 ]
 
 [dependency-groups]

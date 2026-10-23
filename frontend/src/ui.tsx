@@ -221,48 +221,98 @@ export function SectionTitle({
     </div>
   );
 }
+function markdownInline(text: string) {
+  return text
+    .split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)]+\))/g)
+    .map((part, index) => {
+      if (part.startsWith("**") && part.endsWith("**"))
+        return <strong key={index}>{part.slice(2, -2)}</strong>;
+      if (part.startsWith("`") && part.endsWith("`"))
+        return <code key={index}>{part.slice(1, -1)}</code>;
+      const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+      return link ? (
+        <a key={index} href={safeUrl(link[2])} target="_blank" rel="noreferrer">
+          {link[1]} <ExternalLink size={11} />
+        </a>
+      ) : part;
+    });
+}
+
+function markdownTableCells(line: string) {
+  let input = line.trim();
+  if (input.startsWith("|")) input = input.slice(1);
+  if (input.endsWith("|") && !input.endsWith("\\|")) input = input.slice(0, -1);
+  const cells: string[] = [];
+  let cell = "", codeTicks = 0;
+  for (let index = 0; index < input.length; index++) {
+    const character = input[index];
+    if (character === "\\" && input[index + 1] === "|") {
+      cell += "|";
+      index++;
+    } else if (character === "`") {
+      let count = 1;
+      while (input[index + count] === "`") count++;
+      codeTicks = codeTicks === count ? 0 : codeTicks || count;
+      cell += "`".repeat(count);
+      index += count - 1;
+    } else if (character === "|" && !codeTicks) {
+      cells.push(cell.trim());
+      cell = "";
+    } else cell += character;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
 export function Markdown({ text }: { text: string }) {
-  return (
-    <div className="markdown">
-      {text.split("\n").map((line, i) => {
-        const inline = (s: string) =>
-          s
-            .split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)]+\))/g)
-            .map((part, j) => {
-              if (part.startsWith("**") && part.endsWith("**"))
-                return <strong key={j}>{part.slice(2, -2)}</strong>;
-              if (part.startsWith("`") && part.endsWith("`"))
-                return <code key={j}>{part.slice(1, -1)}</code>;
-              const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
-              return link ? (
-                <a
-                  key={j}
-                  href={safeUrl(link[2])}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {link[1]} <ExternalLink size={11} />
-                </a>
-              ) : (
-                part
-              );
-            });
-        if (line.startsWith("### "))
-          return <h4 key={i}>{inline(line.slice(4))}</h4>;
-        if (line.startsWith("## "))
-          return <h3 key={i}>{inline(line.slice(3))}</h3>;
-        if (line.startsWith("# "))
-          return <h2 key={i}>{inline(line.slice(2))}</h2>;
-        if (/^[-*] /.test(line))
-          return (
-            <div className="markdown-bullet" key={i}>
-              • {inline(line.slice(2))}
-            </div>
-          );
-        return <p key={i}>{inline(line) || "\u00a0"}</p>;
-      })}
-    </div>
-  );
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const key = index;
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      const code: string[] = [];
+      const closing = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+      while (++index < lines.length && !closing.test(lines[index])) code.push(lines[index]);
+      const language = fence[2].trim().split(/\s+/)[0];
+      blocks.push(
+        <div className="markdown-code-block" key={key}>
+          {language && <span className="markdown-code-language">{language}</span>}
+          <pre tabIndex={0} aria-label={language ? `Код: ${language}` : "Блок кода"}><code>{code.join("\n")}</code></pre>
+        </div>,
+      );
+      continue;
+    }
+    const nextLine = lines[index + 1] || "";
+    const header = markdownTableCells(line);
+    const separators = markdownTableCells(nextLine);
+    if (line.includes("|") && nextLine.includes("|") && header.length === separators.length && separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      const alignments: ("left" | "center" | "right")[] = separators.map((cell) =>
+        cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left",
+      );
+      const rows: string[][] = [];
+      index++;
+      while (index + 1 < lines.length && lines[index + 1].trim() && lines[index + 1].includes("|") && !/^ {0,3}(`{3,}|~{3,})/.test(lines[index + 1])) {
+        rows.push(markdownTableCells(lines[++index]));
+      }
+      blocks.push(
+        <div className="markdown-table-wrap" key={key} role="region" aria-label="Таблица" tabIndex={0}>
+          <table>
+            <thead><tr>{header.map((cell, column) => <th key={column} scope="col" style={{ textAlign: alignments[column] }}>{markdownInline(cell)}</th>)}</tr></thead>
+            <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{header.map((_, column) => <td key={column} style={{ textAlign: alignments[column] }}>{markdownInline(row[column] || "")}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+    if (line.startsWith("### ")) blocks.push(<h4 key={key}>{markdownInline(line.slice(4))}</h4>);
+    else if (line.startsWith("## ")) blocks.push(<h3 key={key}>{markdownInline(line.slice(3))}</h3>);
+    else if (line.startsWith("# ")) blocks.push(<h2 key={key}>{markdownInline(line.slice(2))}</h2>);
+    else if (/^[-*] /.test(line)) blocks.push(<div className="markdown-bullet" key={key}>• {markdownInline(line.slice(2))}</div>);
+    else blocks.push(<p key={key}>{line ? markdownInline(line) : "\u00a0"}</p>);
+  }
+  return <div className="markdown">{blocks}</div>;
 }
 export function Saved({ show }: { show: boolean }) {
   return show ? (

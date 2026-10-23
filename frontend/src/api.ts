@@ -5,6 +5,7 @@ export type State = {
   folders: Item[];
   annotations: Item[];
   agents: Item[];
+  chats: Item[];
   messages: Item[];
   runs: Item[];
   events: Item[];

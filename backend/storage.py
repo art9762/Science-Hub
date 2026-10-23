@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ KINDS = frozenset(
         "folder",
         "annotation",
         "agent",
+        "chat",
         "message",
         "run",
         "event",
@@ -145,6 +147,42 @@ class Store:
                 raise KeyError("Object not found in this project")
             return json.loads(row[0])
 
+    def ensure_chats(self, project_id: str):
+        """Move pre-chat history into one conversation, atomically and only once."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._project(db, project_id)
+            rows = [
+                (row[0], row[1], json.loads(row[2]))
+                for row in db.execute(
+                    "SELECT id,kind,data FROM objects WHERE project_id=? AND kind IN ('run','message','event')",
+                    (project_id,),
+                )
+            ]
+            if not any(not item.get("chat_id") for _, _, item in rows):
+                return
+            chat_id = str(uuid4())
+            timestamp = now()
+            legacy = {
+                "id": chat_id, "project_id": project_id, "title": "Предыдущие беседы",
+                "created_at": min((item.get("created_at", timestamp) for _, _, item in rows), default=timestamp),
+                "updated_at": timestamp,
+            }
+            run_chats = {item_id: item.get("chat_id") or chat_id for item_id, kind, item in rows if kind == "run"}
+            needs_legacy = any(
+                not item.get("chat_id") and (kind == "run" or not run_chats.get(item.get("run_id")))
+                for _, kind, item in rows
+            ) or chat_id in run_chats.values()
+            if needs_legacy:
+                db.execute(
+                    "INSERT INTO objects(id,project_id,kind,data) VALUES(?,?,'chat',?)",
+                    (chat_id, project_id, json.dumps(legacy, ensure_ascii=False)),
+                )
+            for item_id, kind, item in rows:
+                if not item.get("chat_id"):
+                    item["chat_id"] = run_chats.get(item.get("run_id"), chat_id) if kind != "run" else run_chats[item_id]
+                    db.execute("UPDATE objects SET data=? WHERE id=?", (json.dumps(item, ensure_ascii=False), item_id))
+
     @staticmethod
     def _validate_library_location(db, project_id: str, kind: str, item_id: str, data: dict):
         """Validate library references in the transaction that writes the object."""
@@ -175,7 +213,15 @@ class Store:
                 raise KeyError("Folder not found in this project")
             parent_id = json.loads(row[0]).get("parent_id")
 
-    def put(self, project_id: str, kind: str, data: dict) -> dict:
+    def put(
+        self, project_id: str, kind: str, data: dict,
+        *, merge: Callable[[dict, dict], dict] | None = None,
+    ) -> dict:
+        """Write an object, optionally merging with its current value under the write lock.
+
+        The merge callback must be a short, local transformation: it runs inside
+        the same SQLite transaction as validation and persistence.
+        """
         self._kind(kind)
         result = dict(data)
         if result.get("project_id", project_id) != project_id:
@@ -193,8 +239,16 @@ class Store:
             ).fetchone()
             if existing and (existing[0] != project_id or existing[1] != kind):
                 raise KeyError("Object does not belong to this project or kind")
-            self._validate_library_location(db, project_id, kind, item_id, result)
             previous = json.loads(existing[2]) if existing else {}
+            if merge is not None:
+                # Keep the snapshot used for no-op detection independent of
+                # callbacks that update their input dictionary in place.
+                result = dict(merge(json.loads(existing[2]) if existing else {}, result))
+                if result.get("id", item_id) != item_id or result.get("project_id", project_id) != project_id:
+                    raise KeyError("Merged object does not belong to this project or identifier")
+                if existing and result == previous:
+                    return previous
+            self._validate_library_location(db, project_id, kind, item_id, result)
             timestamp = now()
             result.update(
                 id=item_id,
@@ -231,7 +285,9 @@ class Store:
                 previous_count = len(removed)
                 for related_id, related_kind, item in related:
                     cascade = (
-                        (related_kind == "annotation" and item.get("document_id") in removed)
+                        (kind == "chat" and related_kind in {"run", "message", "event"} and item.get("chat_id") == item_id)
+                        or (related_kind in {"message", "event"} and item.get("run_id") in removed)
+                        or (related_kind == "annotation" and item.get("document_id") in removed)
                         or (
                             related_kind == "link"
                             and (item.get("source") in removed or item.get("target") in removed)

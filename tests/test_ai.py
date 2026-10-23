@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.ai import Runner, schedule_image_analysis, setup_ai
+from backend.ai import SHARED_PROJECT_TOOLS, Runner, schedule_image_analysis, setup_ai
 from backend.providers import OpenAICompatible, ProviderError, Settings, normalize_models
 from backend.research import calculate
 from backend.storage import Store
@@ -134,7 +134,9 @@ async def test_delegate_is_model_selected(workspace, monkeypatch):
     agent_messages = [m for m in store.list(pid, "message") if m["role"] == "agent"]
     assert [m["agent_id"] for m in agent_messages] == [agent["id"]]
     assert adapter.requests[1]["model"] == "specialist"
-    assert {t["function"]["name"] for t in adapter.requests[1]["tools"]} == {"calculate"}
+    assert {t["function"]["name"] for t in adapter.requests[1]["tools"]} == {
+        "calculate"
+    } | SHARED_PROJECT_TOOLS
     assert store.get(pid, "run", run["id"])["usage"]["calls"] == 3
 
 
@@ -223,14 +225,15 @@ async def test_provider_error_redacts_upstream_response(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_selected_document_boundary_and_conflict_evidence(workspace):
+async def test_document_focus_keeps_project_access_and_conflict_evidence(workspace):
     store, pid, settings = workspace
     first = store.put(pid, "document", {"name": "A", "pages": [{"number": 1, "text": "Размер 2"}]})
     second = store.put(pid, "document", {"name": "B", "pages": [{"number": 1, "text": "Размер 3"}]})
     run = new_run(store, pid, document_ids=[first["id"]])
     runner = Runner(store, pid, run, settings)
-    with pytest.raises(ValueError, match="не входит"):
-        await runner.use_tool("read_document", {"document_id": second["id"]}, None, 0)
+    read = await runner.use_tool("read_document", {"document_id": second["id"]}, None, 0)
+    assert read["pages"][0]["text"] == "Размер 3"
+    assert runner.context()["focused_document_ids"] == [first["id"]]
     with pytest.raises(ValueError, match="источники"):
         await runner.use_tool(
             "save_claim",

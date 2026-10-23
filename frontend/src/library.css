@@ -87,6 +87,22 @@
 .pool-drop-label { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 40px); z-index: 3; display: flex; justify-content: center; align-items: center; gap: 8px; padding: 14px 20px; margin: 0; border: 1px solid #7ca16d; border-radius: 8px; background: var(--library-surface); color: var(--library-text); font-size: 14px; pointer-events: none; box-shadow: 0 4px 16px #00000018; }
 .pool-drop-label[hidden] { display: none; }
 .library-workspace button:focus-visible { outline: 2px solid #7ca16d; outline-offset: 3px; }
+.youtube-import-help { font-size: 13px; line-height: 1.7; color: var(--muted); margin: 16px 0; }
+.youtube-import-error { font-size: 13px; line-height: 1.6; padding: 12px; border: 1px solid #d6b4ac; border-radius: 7px; color: #8b3527; background: #fff4ef; }
+.document-source-strip { display: flex; align-items: flex-start; gap: 10px; padding: 13px 20px; border-bottom: 1px solid var(--border); color: var(--text); background: var(--surface-subtle); }
+.document-source-strip > svg { flex-shrink: 0; margin-top: 2px; }
+.document-source-strip > span { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 13px; }
+.document-source-strip small { color: var(--muted); font-size: 12px; }
+.document-source-strip a { font-size: 12px; overflow-wrap: anywhere; color: var(--text); }
+.source-document-preview { padding: 25px; color: var(--text); }
+.source-document-preview h3 { font-size: 20px; line-height: 1.5; overflow-wrap: anywhere; }
+.source-document-preview > p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.youtube-segments { margin-top: 28px; }
+.youtube-segments h4 { font-size: 14px; margin-bottom: 12px; }
+.youtube-segments > a { display: flex; align-items: baseline; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); color: var(--text); font-size: 13px; line-height: 1.7; text-decoration: none; }
+.youtube-segments time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 50px; }
+.youtube-segments > a > span { flex: 1; }
+.youtube-segments > a:hover > span { text-decoration: underline; }
 @media (max-width: 1150px) {
   .knowledge-body { grid-template-columns: 185px minmax(0, 1fr); gap: 18px; }
   .library-workspace .document-row { grid-template-columns: minmax(0, 1fr) 95px 100px; }
