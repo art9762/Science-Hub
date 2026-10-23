@@ -15,11 +15,12 @@ import {
   ChevronDown,
   Search,
   X,
-  Menu,
   FolderOpen,
   ChevronRight,
   Sun,
   Moon,
+  PanelLeftClose,
+  PanelLeft,
 } from "lucide-react";
 import { api, Item, State, Settings } from "./api";
 import { Button, Modal, Field, IconButton } from "./ui";
@@ -53,6 +54,10 @@ export type ScreenProps = {
   activeChatId: string;
   selectChat: (id: string) => void;
   newChat: () => Promise<Item | undefined>;
+  toggleSidebar: () => void;
+  sidebarExpanded: boolean;
+  theme: "light" | "dark";
+  toggleTheme: () => void;
 };
 const nav = [
   { id: "overview", label: "Чаты", icon: MessagesSquare },
@@ -89,6 +94,35 @@ export default function App() {
     [saving, setSaving] = useState(false),
     [sidebar, setSidebar] = useState(false),
     [search, setSearch] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("science-hub-sidebar") === "collapsed");
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarTrigger = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    localStorage.setItem("science-hub-sidebar", sidebarCollapsed ? "collapsed" : "expanded");
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    if (!sidebar) return;
+    const panel = sidebarRef.current;
+    sidebarTrigger.current = document.activeElement as HTMLElement;
+    panel?.querySelector<HTMLElement>("button,a")?.focus();
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebar(false);
+      if (event.key !== "Tab" || !panel) return;
+      const controls = Array.from(panel.querySelectorAll<HTMLElement>("button:not(:disabled),a,select,input,summary")).filter((node) => node.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("keydown", key);
+      sidebarTrigger.current?.focus();
+    };
+  }, [sidebar]);
+  function toggleSidebar() {
+    if (window.matchMedia("(max-width: 760px)").matches) setSidebar((value) => !value);
+    else setSidebarCollapsed((value) => !value);
+  }
   const [viewer, setViewer] = useState<{
     id: string;
     page: number;
@@ -242,9 +276,13 @@ export default function App() {
     activeChatId,
     selectChat: (id) => { setActiveChatId(id); navigate("overview"); },
     newChat,
+    toggleSidebar,
+    sidebarExpanded: sidebar || !sidebarCollapsed,
+    theme,
+    toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
   };
   return (
-    <div className="app-shell">
+    <div className={`app-shell minimal-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${screen === "overview" ? "chat-screen" : ""}`}>
       {sidebar && (
         <button
           className="sidebar-scrim"
@@ -252,7 +290,8 @@ export default function App() {
           aria-label="Закрыть меню"
         />
       )}
-      <aside className={`sidebar ${sidebar ? "open" : ""}`}>
+      <aside ref={sidebarRef} id="project-sidebar" className={`sidebar ${sidebar ? "open" : ""}`} aria-label="Навигация проекта">
+        <div className="sidebar-brand-row">
         <a
           className="brand"
           href="#"
@@ -269,8 +308,12 @@ export default function App() {
 
           </span>
         </a>
+        <IconButton aria-label="Свернуть боковую панель" title="Свернуть боковую панель" onClick={() => { setSidebar(false); setSidebarCollapsed(true); }}><PanelLeftClose size={18} /></IconButton>
+        </div>
+        <button className="sidebar-new-chat" onClick={() => void newChat()} disabled={creatingChat || !pid}>
+          <SquarePen size={18} /> {creatingChat ? "Создаём чат…" : "Новый чат"}
+        </button>
         <div className="project-switch">
-          <span className="side-label">ВАШ ПРОЕКТ</span>
           <div className="project-select">
             <span className="project-symbol">
               {projects
@@ -292,14 +335,14 @@ export default function App() {
             </select>
             <ChevronDown size={14} />
           </div>
-          <button className="new-project" onClick={() => setProjectModal(true)}>
+          <button className="new-project" title="Новый проект" aria-label="Новый проект" onClick={() => setProjectModal(true)}>
             <Plus size={14} />
-            Новый проект
           </button>
         </div>
-        <div className="side-label nav-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-        <nav>
-          {nav.map((item) => (
+        <details className="sidebar-tools">
+          <summary><Library size={18} /><span>Инструменты проекта</span><ChevronDown size={14} /></summary>
+        <nav aria-label="Инструменты проекта">
+          {nav.filter((item) => item.id !== "overview").map((item) => (
             <button
               key={item.id}
               className={`nav-item ${screen === item.id ? "active" : ""}`}
@@ -316,17 +359,12 @@ export default function App() {
             </button>
           ))}
         </nav>
+        </details>
         {state && (
           <section className="sidebar-chats" aria-label="Чаты проекта">
             <div className="sidebar-chats-heading">
-              <span className="side-label">ЧАТЫ ПРОЕКТА</span>
-              <button onClick={() => void newChat()} disabled={creatingChat} aria-label="Новый чат" title="Новый чат">
-                <SquarePen size={17} />
-              </button>
+              <span className="side-label">История чатов</span>
             </div>
-            <button className="sidebar-new-chat" onClick={() => void newChat()} disabled={creatingChat}>
-              <Plus size={16} /> {creatingChat ? "Создаём чат…" : "Новый чат"}
-            </button>
             <div className="sidebar-chat-list">
               {(state.chats || []).slice().reverse().map((chat) => (
                 <button
@@ -346,6 +384,7 @@ export default function App() {
           </section>
         )}
         <div className="sidebar-bottom">
+          <button className="nav-item" onClick={() => navigate("overview")}><MessagesSquare size={18} /><span>Вернуться к чату</span></button>
           <button
             className={`nav-item ${screen === "settings" ? "active" : ""}`}
             onClick={() => navigate("settings")}
@@ -356,15 +395,16 @@ export default function App() {
 
         </div>
       </aside>
-      <div className="main-shell">
-        <header className="topbar">
+      <div className="main-shell" inert={sidebar || undefined}>
+        {screen !== "overview" && <header className="topbar">
           <div className="breadcrumb">
             <IconButton
-              onClick={() => setSidebar(true)}
-              className="mobile-menu"
-              aria-label="Открыть меню"
+              onClick={toggleSidebar}
+              className="sidebar-toggle icon-button"
+              aria-label={sidebarCollapsed ? "Открыть меню" : "Свернуть меню"}
+              aria-controls="project-sidebar"
             >
-              <Menu size={20} />
+              <PanelLeft size={20} />
             </IconButton>
             <span className="desktop-only">Пространство</span>
             <ChevronRight size={13} />
@@ -405,7 +445,7 @@ export default function App() {
               {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
             </IconButton>
           </div>
-        </header>
+        </header>}
         <main className={`content content-${screen}`}>
           {screen === "settings" ? (
             <SettingsScreen

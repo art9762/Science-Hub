@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowRight, ArrowUp, BookOpen, ChevronDown, Clock,
-  Compass, ExternalLink, FileText, Info, Paperclip, Pencil, Plus,
-  Save, Square, Trash2, UserRound, Users, X,
+  Compass, ExternalLink, FileText, MoreHorizontal, Paperclip, Pencil, PanelLeft,
+  Save, Square, SquarePen, SlidersHorizontal, Sun, Moon, Trash2, Users,
 } from "lucide-react";
 import { ScreenProps } from "./App";
 import { date, Item, safeUrl } from "./api";
@@ -17,6 +17,7 @@ const duration = (seconds: number) => `${Math.floor(seconds / 60)} мин ${seco
 
 export function Overview({
   state, settings, mutate, navigate, openDocument, activeChatId, selectChat, newChat,
+  toggleSidebar, sidebarExpanded, theme, toggleTheme,
 }: ScreenProps) {
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState("team");
@@ -24,9 +25,8 @@ export function Overview({
   const [docs, setDocs] = useState<string[]>([]);
   const [agents, setAgents] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [scope, setScope] = useState<"documents" | "agents" | null>(null);
+  const [scope, setScope] = useState<"documents" | "agents" | "settings" | "activity" | null>(null);
   const [runId, setRunId] = useState("");
-  const [logOpen, setLogOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [chatDialog, setChatDialog] = useState<"rename" | "delete" | null>(null);
   const [chatTitle, setChatTitle] = useState("");
@@ -58,7 +58,7 @@ export function Overview({
   }, [messages.length, activeChatId]);
   useEffect(() => {
     setDocs([]); setAgents([]); setPrompt(""); setScope(null); setRunId("");
-    setLogOpen(false); setAtBottom(true); scrollEnd.current = true;
+    setAtBottom(true); scrollEnd.current = true;
   }, [state.project.id, activeChatId]);
   useEffect(() => {
     const textarea = inputRef.current;
@@ -67,11 +67,8 @@ export function Overview({
     textarea.style.height = `${Math.min(textarea.scrollHeight, 190)}px`;
   }, [prompt]);
   useEffect(() => {
-    if (!scope) return;
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setScope(null); };
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [scope]);
+    setChatDialog(null);
+  }, [activeChatId]);
 
   async function submit(event?: React.FormEvent) {
     event?.preventDefault();
@@ -124,126 +121,136 @@ export function Overview({
     scrollEnd.current = true; setAtBottom(true);
   }
 
+  const scopeTitles = { documents: "Источники", agents: "Команда", settings: "Параметры", activity: "Ход работы" };
+  const empty = messages.length === 0;
+
   return (
-    <div className="conversation-workspace">
-      <header className="conversation-heading">
-        <div className="conversation-title">
-          <p>{state.project.name}</p>
-          <h1>{chat?.title || "Новый чат"}</h1>
+    <div className={`chat-workspace ${empty ? "is-empty" : "has-messages"}`}>
+      <header className="chat-header">
+        <div className="chat-header-leading">
+          <IconButton className="icon-button chat-sidebar-toggle" onClick={toggleSidebar} aria-label={sidebarExpanded ? "Свернуть боковую панель" : "Открыть боковую панель"} aria-controls="project-sidebar" title={sidebarExpanded ? "Свернуть боковую панель" : "Открыть боковую панель"}><PanelLeft size={20} /></IconButton>
+          <button className="chat-model-trigger" onClick={() => setScope("settings")} title="Модель и параметры">
+            <span>Science Hub</span><ChevronDown size={14} />
+          </button>
+          <span className="chat-header-divider" />
+          <span className="chat-header-title" title={chat?.title || state.project.name}>{chat?.title || state.project.name}</span>
         </div>
-        <div className="conversation-actions">
-          {chat && <>
-            <IconButton onClick={() => { setChatTitle(chat.title || ""); setChatDialog("rename"); }} aria-label="Переименовать чат" title="Переименовать чат"><Pencil size={17} /></IconButton>
-            <IconButton onClick={() => setChatDialog("delete")} aria-label="Удалить чат" title={running.length ? "Остановите задачи, чтобы удалить чат" : "Удалить чат"} disabled={running.length > 0}><Trash2 size={17} /></IconButton>
-          </>}
-          <Button variant="secondary small" onClick={() => void newChat()}><Plus size={16} /><span>Новый чат</span></Button>
+        <div className="chat-header-actions">
+          <IconButton onClick={toggleTheme} aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"} title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}>{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</IconButton>
+          <IconButton className={`icon-button chat-activity-trigger ${running.length ? "is-running" : ""}`} onClick={() => setScope("activity")} aria-label="Ход работы" title="Ход работы"><Activity size={18} /></IconButton>
+          {chat && <details className="chat-actions-menu">
+            <summary aria-label="Действия с чатом" title="Действия с чатом"><MoreHorizontal size={20} /></summary>
+            <div className="chat-menu-items">
+              <button onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setChatTitle(chat.title || ""); setChatDialog("rename"); }}><Pencil size={15} />Переименовать</button>
+              <button disabled={running.length > 0} title={running.length ? "Сначала остановите задачу" : undefined} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); setChatDialog("delete"); }}><Trash2 size={15} />Удалить чат</button>
+            </div>
+          </details>}
+          <IconButton className="icon-button chat-new-shortcut" onClick={() => void newChat()} aria-label="Новый чат" title="Новый чат"><SquarePen size={19} /></IconButton>
         </div>
       </header>
 
-      <section className="team-status-strip" aria-label="Статусы команды">
-        <div className={`team-status-member orchestrator-status ${projectRunning.length ? "working" : "ready"}`}>
-          <Compass size={17} /><strong>Оркестратор</strong>
-          <span className="team-status-dot" />
-          <span>{otherRunning.length ? "В другом чате" : running.length ? statusNames[running.at(-1)!.status] : "Готов"}</span>
-        </div>
-        {enabledAgents.map((agent) => {
-          const status = agentStatus(agent);
-          return <div key={agent.id} className={`team-status-member ${status.tone}`} title={agent.role || agent.name}>
-            <Users size={15} /><strong>{agent.name}</strong><span className="team-status-dot" /><span>{status.label}</span>
-          </div>;
-        })}
-        {!enabledAgents.length && <button className="team-add-agent" onClick={() => navigate("agents")}><Plus size={14} /> Добавить агента</button>}
-      </section>
-
-      <section className="conversation-panel panel" aria-label="Чат с оркестратором">
-        <div className="conversation-scroll-area">
-        <div className="conversation-messages messages" ref={messagesRef} onScroll={() => {
+      <section className="chat-conversation" aria-label="Чат с оркестратором">
+        <div className="chat-scroll" ref={messagesRef} onScroll={() => {
           const element = messagesRef.current;
           if (!element) return;
           const bottom = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
           scrollEnd.current = bottom; setAtBottom(bottom);
         }}>
-          {!messages.length ? (
-            <div className="chat-empty conversation-empty">
-              <span className="conversation-empty-icon"><Compass size={32} strokeWidth={1.5} /></span>
-              <h2>Что исследуем сегодня?</h2>
-              <p>Обсудите задачу с оркестратором. Команда работает с материалами, документами и доской этого проекта.</p>
-              <div className="workbench-suggestions">
-                <button onClick={() => { setPrompt("Проанализируй материалы и доску проекта. Выдели ключевые факты, противоречия и вопросы, на которые пока нет ответа."); inputRef.current?.focus(); }}><BookOpen size={16} /> Разобрать проект</button>
-                <button onClick={() => { setPrompt("Составь план исследования проекта: уточни исходные данные, предложи этапы и распредели задачи между специалистами."); inputRef.current?.focus(); }}><Users size={16} /> Составить план</button>
-              </div>
-              <small>У каждого чата своя переписка. Материалы проекта общие.</small>
-            </div>
-          ) : <div className="conversation-thread">
+          {empty ? <div className="chat-welcome">
+            <Compass size={29} strokeWidth={1.4} aria-hidden="true" />
+            <h1>Что исследуем сегодня?</h1>
+            <p>От первого вопроса до нового открытия.</p>
+          </div> : <div className="chat-thread" aria-live="polite" aria-relevant="additions">
             {messages.map((message) => {
               const kind = message.role === "user" ? "user" : message.role === "system" ? "system" : message.role === "agent" ? "agent" : "orchestrator";
-              const name = kind === "user" ? "Вы" : kind === "system" ? "Система" : kind === "agent" ? message.agent_name || "Агент" : "Оркестратор";
-              return <article key={message.id} className={`message conversation-message ${kind}-message`} aria-label={`Сообщение: ${name}`}>
-                <div className="message-head">
-                  <span className={`message-avatar ${kind}`}>
-                    {kind === "user" ? <UserRound size={17} /> : kind === "system" ? <Info size={17} /> : kind === "agent" ? <Users size={17} /> : <Compass size={18} />}
-                  </span>
-                  <strong>{name}</strong>
-                  {kind === "agent" && <span className="message-role-label">Агент</span>}
-                  <time dateTime={message.created_at}>{date(message.created_at)}</time>
-                  {["orchestrator", "agent"].includes(kind) && <IconButton title="Сохранить в документы" aria-label="Сохранить ответ в документы" onClick={() => void saveMessage(message)}><Save size={15} /></IconButton>}
-                </div>
-                <div className="message-body"><Markdown text={message.content || ""} /></div>
-                {!!message.sources?.length && <div className="message-sources">
-                  {message.sources.map((source: any, index: number) => typeof source === "string" ? <span key={index} className="source-chip">{source}</span> : source.document_id || (source.type === "document" && source.id) ? (
+              const name = kind === "user" ? "Вы" : kind === "system" ? "Система" : kind === "agent" ? message.agent_name || "Агент" : "Science Hub";
+              return <article key={message.id} className={`chat-message chat-message-${kind}`} aria-label={`Сообщение: ${name}`}>
+                {kind !== "user" && <div className="chat-message-author"><span>{kind === "agent" ? <Users size={17} /> : <Compass size={18} />}</span><strong>{name}</strong></div>}
+                <div className="chat-message-content"><Markdown text={message.content || ""} /></div>
+                {!!message.sources?.length && <details className="chat-message-sources">
+                  <summary><BookOpen size={14} />Источники · {message.sources.length}<ChevronDown size={13} /></summary>
+                  <div>{message.sources.map((source: any, index: number) => typeof source === "string" ? <span key={index} className="source-chip">{source}</span> : source.document_id || (source.type === "document" && source.id) ? (
                     <button key={index} className="source-chip" onClick={() => openDocument(source.document_id || source.id, source.page || 1, source.quote || source.text || "")}><FileText size={12} />{source.document_name || source.name || source.title || "Источник"} · {source.page || 1}</button>
                   ) : source.url ? (
                     <a key={index} className="source-chip" target="_blank" rel="noreferrer" href={safeUrl(source.url)}><ExternalLink size={12} />{source.title || source.url}</a>
-                  ) : <span className="source-chip" key={index}>{source.title || source.name || ({ calculation: "Расчёт", agent_statement: "Вывод специалиста", workspace_document: "Рабочий документ" } as Record<string, string>)[source.type] || "Материал проекта"}</span>)}
+                  ) : <span className="source-chip" key={index}>{source.title || source.name || ({ calculation: "Расчёт", agent_statement: "Вывод специалиста", workspace_document: "Рабочий документ" } as Record<string, string>)[source.type] || "Материал проекта"}</span>)}</div>
+                </details>}
+                {kind !== "user" && <div className="chat-message-footer">
+                  {["orchestrator", "agent"].includes(kind) && <IconButton title="Сохранить в документы" aria-label="Сохранить ответ в документы" onClick={() => void saveMessage(message)}><Save size={15} /></IconButton>}
+                  <time dateTime={message.created_at}>{date(message.created_at)}</time>
                 </div>}
               </article>;
             })}
-            {running.length > 0 && <div className="thinking" role="status"><span /><span /><span />Команда работает над задачей…</div>}
+            {running.length > 0 && <button className="chat-thinking" onClick={() => setScope("activity")}><span className="chat-working-dot" />Команда работает над задачей<ChevronDown size={13} /></button>}
           </div>}
         </div>
-        {!atBottom && <button className="conversation-scroll-bottom" onClick={jumpToBottom}><ArrowDown size={16} /> К новым сообщениям</button>}
-        </div>
+        {!atBottom && <button className="chat-scroll-bottom" onClick={jumpToBottom} aria-label="К новым сообщениям"><ArrowDown size={18} /></button>}
 
-        <div className="conversation-composer composer-wrap">
-          {otherRunning.length > 0 && <div className="running-banner conversation-other-chat"><Activity size={15} className="pulse" /><span>Команда работает в другом чате. Новую задачу можно отправить после завершения.</span><button onClick={() => selectChat(otherRunning[0].chat_id)}>Открыть чат <ArrowRight size={13} /></button></div>}
-          {followupRun && <div className="limit-banner"><Clock size={16} /><span>Сохранён промежуточный результат. Исследование можно продолжить.</span><button className="text-link" onClick={() => { setPrompt(`Продолжи исследование по предыдущей задаче: ${followupRun.prompt}. Учти сохранённые результаты и укажи, что осталось выполнить.`); inputRef.current?.focus(); }}>Продолжить <ArrowRight size={14} /></button></div>}
-          {running.map((run) => <div className="running-banner" key={run.id}><Activity size={15} className="pulse" /><span>{statusNames[run.status]} · {String(run.prompt).slice(0, 85)}</span><button onClick={() => mutate(`/runs/${run.id}/cancel`, {}).catch(() => {})}><Square size={12} /> Остановить</button></div>)}
-          {scope && <div className="scope-popover">
-            <div className="scope-heading"><strong>{scope === "documents" ? "Источники для этой задачи" : "Состав команды"}</strong><div><button onClick={() => scope === "documents" ? setDocs([]) : setAgents([])}>Сбросить</button><IconButton onClick={() => setScope(null)} aria-label="Закрыть выбор"><X size={16} /></IconButton></div></div>
-            <p>{scope === "documents" ? "Выбранные источники будут в фокусе. Все материалы проекта остаются доступны команде." : "Без выбора оркестратор сам подключит нужных агентов."}</p>
-            <div className="scope-list">
-              {(scope === "documents" ? state.documents : enabledAgents).map((item) => <label key={item.id}><input type="checkbox" checked={(scope === "documents" ? docs : agents).includes(item.id)} onChange={() => scope === "documents" ? toggle(docs, item.id, setDocs) : toggle(agents, item.id, setAgents)} /><span>{item.name}</span></label>)}
-              {!(scope === "documents" ? state.documents : enabledAgents).length && <small>Пока ничего не добавлено.</small>}
-            </div>
-          </div>}
-          <form className="composer" onSubmit={submit}>
-            <textarea ref={inputRef} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Задайте вопрос или опишите задачу…" rows={2} aria-label="Сообщение оркестратору" onKeyDown={(event) => {
+        <div className="chat-composer-wrap">
+          {otherRunning.length > 0 && <div className="chat-notice" role="status"><Activity size={16} /><span>Команда работает в другом чате.</span><button onClick={() => selectChat(otherRunning[0].chat_id)}>Открыть <ArrowRight size={13} /></button></div>}
+          {followupRun && <div className="chat-notice"><Clock size={16} /><span>Промежуточный результат сохранён.</span><button onClick={() => { setPrompt(`Продолжи исследование по предыдущей задаче: ${followupRun.prompt}. Учти сохранённые результаты и укажи, что осталось выполнить.`); inputRef.current?.focus(); }}>Продолжить <ArrowRight size={13} /></button></div>}
+          {running.map((run) => <div className="chat-notice" key={run.id} role="status"><span className="chat-working-dot" /><button className="chat-run-status" onClick={() => setScope("activity")}>{statusNames[run.status]}</button><button onClick={() => mutate(`/runs/${run.id}/cancel`, {}).catch(() => {})}><Square size={12} />Остановить</button></div>)}
+          <form className="chat-composer" onSubmit={submit} aria-label="Новое сообщение">
+            <textarea ref={inputRef} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Задайте вопрос или опишите идею…" rows={1} aria-label="Сообщение оркестратору" onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
             }} />
-            <div className="composer-toolbar"><div className="composer-controls">
-              <button type="button" className={scope === "documents" ? "selected" : ""} aria-expanded={scope === "documents"} onClick={() => setScope(scope === "documents" ? null : "documents")}><Paperclip size={16} /><span>{docs.length ? `${docs.length} источников` : "Весь проект"}</span></button>
-              <button type="button" className={scope === "agents" ? "selected" : ""} aria-expanded={scope === "agents"} onClick={() => setScope(scope === "agents" ? null : "agents")}><Users size={16} /><span>{agents.length ? `${agents.length} агентов` : "Команда"}</span></button>
-              <select aria-label="Режим работы" value={mode} onChange={(event) => setMode(event.target.value)}><option value="team">Командная работа</option><option value="chat">Быстрый ответ</option></select>
-            </div><button className="send-button" type="submit" disabled={busy || !prompt.trim() || otherRunning.length > 0} aria-label="Отправить сообщение"><ArrowUp size={21} /></button></div>
-          </form>
-          <div className="composer-bottom"><label><span className="model-dot" /><select value={model} onChange={(event) => setModel(event.target.value)} aria-label="Модель для задачи"><option value="">{settings?.orchestrator_model || "Модель из настроек"}</option>{models.map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select><ChevronDown size={11} /></label><span>Enter · отправить &nbsp; Shift + Enter · новая строка</span></div>
-        </div>
-
-        <section className={`conversation-progress ${logOpen ? "expanded" : ""}`} aria-label="Ход решения">
-          <div className="conversation-progress-heading">
-            <button className="progress-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}><Activity size={16} /><strong>Ход решения</strong>{selectedRun && <span>{statusNames[selectedRun.status] || selectedRun.status}</span>}<ChevronDown size={15} /></button>
-            {selectedRun && <span className="progress-summary"><Clock size={13} />{duration(elapsed)}<span>· {selectedRun.usage?.calls || 0} вызовов</span></span>}
-          </div>
-          {logOpen && <div className="conversation-progress-body">
-            {chatRuns.length > 1 && <select value={selectedRun?.id || ""} onChange={(event) => setRunId(event.target.value)} aria-label="Задача для просмотра хода решения">{chatRuns.slice().reverse().map((run) => <option key={run.id} value={run.id}>{String(run.prompt).slice(0, 80)}</option>)}</select>}
-            {selectedRun?.status === "wrapping_up" && <p className="run-deadline">Время исследования истекло. Команда сохраняет результаты перед остановкой.</p>}
-            <div className="conversation-events" role="log" aria-label="Действия команды">
-              {recentEvents.map((event) => <div key={event.id} className={`workbench-event ${["error", "tool_error", "timed_out", "agent_failed"].includes(event.type) ? "error" : ""}`}><span className="event-dot" /><p>{event.message}</p><time>{date(event.created_at)}</time></div>)}
-              {!recentEvents.length && <p className="workbench-placeholder">{selectedRun ? "Задача ожидает запуска." : "Здесь появятся действия команды, обращения к источникам и сохранённые результаты."}</p>}
+            <div className="chat-composer-toolbar">
+              <div className="chat-composer-tools">
+                <button type="button" className={docs.length ? "is-selected" : ""} onClick={() => setScope("documents")} aria-label="Выбрать источники" title="Источники проекта"><Paperclip size={19} />{!!docs.length && <span>{docs.length}</span>}</button>
+                <button type="button" className={agents.length ? "is-selected" : ""} onClick={() => setScope("agents")} aria-label="Выбрать команду" title="Команда"><Users size={19} />{!!agents.length && <span>{agents.length}</span>}</button>
+                <button type="button" onClick={() => setScope("settings")} aria-label="Параметры чата" title="Параметры чата"><SlidersHorizontal size={18} /></button>
+              </div>
+              <button type="button" className="chat-mode-trigger" onClick={() => setScope("settings")}>{mode === "team" ? "Исследование" : "Быстрый ответ"}<ChevronDown size={12} /></button>
+              <button className="chat-send" type="submit" disabled={busy || !prompt.trim() || otherRunning.length > 0} aria-label="Отправить сообщение" aria-busy={busy}>{busy ? <span className="chat-sending" /> : <ArrowUp size={21} />}</button>
             </div>
+          </form>
+          {empty && <div className="chat-starters" aria-label="С чего начать">
+            <button onClick={() => { setPrompt("Проанализируй материалы и доску проекта. Выдели ключевые факты, противоречия и вопросы, на которые пока нет ответа."); inputRef.current?.focus(); }}><BookOpen size={15} />Разобрать материалы</button>
+            <button onClick={() => { setPrompt("Составь план исследования проекта: уточни исходные данные, предложи этапы и распредели задачи между специалистами."); inputRef.current?.focus(); }}><Compass size={15} />Составить план</button>
           </div>}
-        </section>
+          {!empty && <p className="chat-disclaimer">Проверяйте важные выводы по первоисточникам.</p>}
+        </div>
       </section>
+      {empty && <div className="chat-empty-footer"><span />Материалы и история остаются в вашем проекте</div>}
+
+      {scope && <Modal title="Контекст чата" onClose={() => setScope(null)}>
+        <div className="chat-details">
+          <div className="chat-details-tabs" aria-label="Разделы контекста">
+            {(Object.keys(scopeTitles) as Array<keyof typeof scopeTitles>).map((tab) => <button key={tab} aria-pressed={scope === tab} onClick={() => setScope(tab)}>{scopeTitles[tab]}</button>)}
+          </div>
+          <div className="chat-details-content">
+            <h3>{scopeTitles[scope]}</h3>
+            {(scope === "documents" || scope === "agents") && <>
+              <p>{scope === "documents" ? "Выберите материалы, на которых нужно сфокусироваться. Без выбора доступны все источники проекта." : "Выберите специалистов для задачи. Без выбора оркестратор сам подключит нужных агентов."}</p>
+              {scope === "agents" && <div className="chat-orchestrator"><Compass size={20} /><div><strong>Оркестратор</strong><small>{otherRunning.length ? "Работает в другом чате" : running.length ? statusNames[running.at(-1)!.status] : "Готов к работе"}</small></div><span className={projectRunning.length ? "chat-working-dot" : "chat-ready-dot"} /></div>}
+              <div className="chat-selection-heading"><span>{scope === "documents" ? `Материалы · ${state.documents.length}` : `Специалисты · ${enabledAgents.length}`}</span><button onClick={() => scope === "documents" ? setDocs([]) : setAgents([])}>Сбросить</button></div>
+              <div className="chat-selection-list">
+                {(scope === "documents" ? state.documents : enabledAgents).map((item) => <label key={item.id}>
+                  <input type="checkbox" checked={(scope === "documents" ? docs : agents).includes(item.id)} onChange={() => scope === "documents" ? toggle(docs, item.id, setDocs) : toggle(agents, item.id, setAgents)} />
+                  <span><strong>{item.name}</strong>{scope === "agents" && <small>{agentStatus(item).label}{item.role ? ` · ${item.role}` : ""}</small>}</span>
+                </label>)}
+                {!(scope === "documents" ? state.documents : enabledAgents).length && <div className="chat-details-empty">{scope === "documents" ? <BookOpen size={28} strokeWidth={1.3} /> : <Users size={28} strokeWidth={1.3} />}<p>{scope === "documents" ? "Добавьте материалы, чтобы исследовать их вместе." : "Добавьте специалистов для командной работы."}</p></div>}
+              </div>
+              <button className="chat-details-link" onClick={() => navigate(scope === "documents" ? "library" : "agents")}>{scope === "documents" ? "Открыть базу знаний" : "Настроить команду"}<ArrowRight size={15} /></button>
+            </>}
+            {scope === "settings" && <>
+              <p>Выберите подходящий режим и модель. Параметры применятся к следующему сообщению.</p>
+              <Field label="Режим работы"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="team">Исследование с командой</option><option value="chat">Быстрый ответ</option></select></Field>
+              <Field label="Модель"><select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{settings?.orchestrator_model || "Модель из настроек"}</option>{models.map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select></Field>
+              <button className="chat-details-link" onClick={() => navigate("settings")}>Все настройки<ArrowRight size={15} /></button>
+            </>}
+            {scope === "activity" && <>
+              <p>Обращения к источникам, действия команды и сохранённые результаты.</p>
+              {chatRuns.length > 1 && <Field label="Задача"><select value={selectedRun?.id || ""} onChange={(event) => setRunId(event.target.value)}>{chatRuns.slice().reverse().map((run) => <option key={run.id} value={run.id}>{String(run.prompt).slice(0, 80)}</option>)}</select></Field>}
+              {selectedRun && <div className="chat-run-summary"><span>{statusNames[selectedRun.status] || selectedRun.status}</span><span><Clock size={13} />{duration(elapsed)}</span><small>{selectedRun.usage?.calls || 0} вызовов модели</small></div>}
+              {selectedRun?.status === "wrapping_up" && <p className="chat-notice">Время исследования истекло. Команда сохраняет результаты.</p>}
+              <div className="chat-events" role="log" aria-label="Действия команды">{recentEvents.map((event) => <div key={event.id} className={["error", "tool_error", "timed_out", "agent_failed"].includes(event.type) ? "has-error" : ""}><span /><p>{event.message}<time>{date(event.created_at)}</time></p></div>)}</div>
+              {!recentEvents.length && <div className="chat-details-empty"><Activity size={28} strokeWidth={1.3} /><p>{selectedRun ? "Задача ожидает запуска." : "Ход работы появится здесь после первого сообщения."}</p></div>}
+            </>}
+          </div>
+          <Button variant="secondary" onClick={() => setScope(null)}>Вернуться к чату</Button>
+        </div>
+      </Modal>}
       {chatDialog && <Modal title={chatDialog === "rename" ? "Название чата" : "Удалить чат?"} onClose={() => !savingChat && setChatDialog(null)}>
         <form onSubmit={updateChat}>
           {chatDialog === "rename" ? <Field label="Название"><input autoFocus required maxLength={160} value={chatTitle} onChange={(event) => setChatTitle(event.target.value)} /></Field> : <p className="chat-delete-explanation">Чат «{chat?.title}» и его переписка будут удалены. Материалы проекта и сохранённые документы останутся доступны.</p>}
